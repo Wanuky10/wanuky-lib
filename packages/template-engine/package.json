@@ -4,11 +4,15 @@
   "description": "Custom SSR template engine: interpolasi, include partial, layout/slot, loop, elseif",
   "type": "module",
   "main": "src/index.js",
-  "exports": { ".": "./src/index.js" },
-  "files": ["src"],
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Wanuky10/wanuky-lib.git"
+    "url": "git+https://github.com/Wanuky10/wanuky-lib.git"
   },
   "author": "Wahid Nur Hakim",
   "license": "UNLICENSED",
@@ -17,6 +21,10 @@
     "registry": "https://npm.pkg.github.com",
     "access": "restricted"
   },
-  "scripts": { "test": "node --test tests/templateEngine.test.js" },
-  "engines": { "node": ">=18.0.0" }
+  "scripts": {
+    "test": "node --test tests/templateEngine.test.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

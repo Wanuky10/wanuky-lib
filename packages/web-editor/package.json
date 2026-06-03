@@ -5,14 +5,16 @@
   "type": "module",
   "main": "src/index.js",
   "exports": {
-    ".":             "./src/index.js",
-    "./rich-text":   "./src/richTextEditor.js",
-    "./image":       "./src/imageEditor.js"
+    ".": "./src/index.js",
+    "./rich-text": "./src/richTextEditor.js",
+    "./image": "./src/imageEditor.js"
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Wanuky10/wanuky-lib.git"
+    "url": "git+https://github.com/Wanuky10/wanuky-lib.git"
   },
   "author": "Wahid Nur Hakim",
   "license": "UNLICENSED",
@@ -24,5 +26,7 @@
   "scripts": {
     "test": "echo '@wanuky10/web-editor: jalankan test di proyek konsumen (lingkungan browser)'"
   },
-  "engines": { "node": ">=18.0.0" }
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
