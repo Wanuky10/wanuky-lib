@@ -56,7 +56,9 @@ const PRESET_FITUR = {
 };
 
 const FAKTOR_ZOOM_LANGKAH = 0.15;
-const ZOOM_MIN             = 0.5;   // Tidak boleh lebih kecil dari 50% fit
+// ZOOM_MIN=1 menjamin gambar selalu menutupi seluruh kanvas — tidak ada
+// background gelap yang terlihat. User hanya bisa zoom-in, tidak zoom-out.
+const ZOOM_MIN             = 1;
 const ZOOM_MAKS            = 5;
 const MIN_UKURAN_CROP      = 10;
 const UKURAN_HANDLE        = 9;     // Piksel — ukuran handle resize crop
@@ -290,6 +292,7 @@ export class ImageEditor {
       case 'zoomKeluar': this._ubahZoom(this._zoom - FAKTOR_ZOOM_LANGKAH); break;
       case 'zoomReset':
         this._zoom = 1; this._offsetX = 0; this._offsetY = 0;
+        this._klampPan();
         this._render(); break;
       case 'brightness':
       case 'contrast':
@@ -377,24 +380,30 @@ export class ImageEditor {
   // ─────────────────────────────────────────────
 
   /**
-   * Membatasi offset pan agar gambar tidak keluar sepenuhnya dari viewport.
-   * Minimal 25% dimensi kanvas harus tetap tertutup gambar.
+   * Membatasi offset pan agar gambar selalu menutupi seluruh kanvas.
+   *
+   * Formula: maxOffset = (ukuranGambarDiKanvas - ukuranKanvas) / 2
+   *   → Jika gambar == kanvas (zoom=1): maxOffset=0, tidak bisa pan sama sekali
+   *   → Jika gambar 2× kanvas (zoom=2): maxOffset = kanvas/2, bisa pan setengah kanvas
+   *
+   * Ini menjamin tidak ada area gelap (background) yang terlihat selama pan.
    */
   _klampPan() {
     if (!this._gambar) return;
-    const skalaDasar = this._skalaDasarUntukFit();
+    const sd     = this._skalaDasarUntukFit();
     const diputar = this._rotasi % 180 !== 0;
-    const imgLebarKanvas  = (diputar ? this._gambar.height : this._gambar.width)  * skalaDasar * this._zoom;
-    const imgTinggiKanvas = (diputar ? this._gambar.width  : this._gambar.height) * skalaDasar * this._zoom;
-    const cW = this._kanvas.width;
-    const cH = this._kanvas.height;
+    const imgW   = (diputar ? this._gambar.height : this._gambar.width)  * sd * this._zoom;
+    const imgH   = (diputar ? this._gambar.width  : this._gambar.height) * sd * this._zoom;
+    const cW     = this._kanvas.width;
+    const cH     = this._kanvas.height;
 
-    // Batas offset: gambar boleh keluar tidak lebih dari (dimensi - 25%)
-    const batasX = (imgLebarKanvas  + cW) / 2 - cW  * 0.25;
-    const batasY = (imgTinggiKanvas + cH) / 2 - cH  * 0.25;
+    // maxOffset selalu >= 0; jika gambar lebih kecil dari canvas (seharusnya
+    // tidak terjadi karena ZOOM_MIN=1), klamp ke 0 agar tetap aman.
+    const maxOffsetX = Math.max(0, (imgW - cW) / 2);
+    const maxOffsetY = Math.max(0, (imgH - cH) / 2);
 
-    this._offsetX = Math.max(-batasX, Math.min(batasX, this._offsetX));
-    this._offsetY = Math.max(-batasY, Math.min(batasY, this._offsetY));
+    this._offsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, this._offsetX));
+    this._offsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, this._offsetY));
   }
 
   // ─────────────────────────────────────────────
@@ -895,6 +904,15 @@ export class ImageEditor {
         reject(new Error('[ImageEditor] Tidak ada gambar yang dimuat.'));
         return;
       }
+
+      // Re-render tanpa overlay crop/circle agar ekspor bersih dari artefak UI.
+      // Simpan state modeCrop sementara, matikan selama render ekspor.
+      const modeCropSimpan = this._modeCrop;
+      this._modeCrop = false;
+      this._render();
+      this._modeCrop = modeCropSimpan;
+      // Tidak perlu _render() lagi setelah ekspor — overlay akan muncul kembali
+      // di next render cycle (saat user berinteraksi).
 
       let kanvasEkspor = this._kanvas;
 
