@@ -82,8 +82,8 @@ Jalankan perintah berikut di terminal Windows dari folder `wanuky-lib`:
 # Hapus .git yang rusak jika ada, lalu inisialisasi ulang
 Remove-Item -Recurse -Force .git -ErrorAction SilentlyContinue
 git init -b main
-git config user.name "Wahid Nur Hakim"
-git config user.email "wahidnurhakim10@gmail.com"
+git config user.name "Wahid NurHakim"
+git config user.email "nakanamiwanuki@gmail.com"
 
 # Tambahkan semua file
 git add .

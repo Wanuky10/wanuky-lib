@@ -1,6 +1,6 @@
 {
   "name": "@wanuky10/web-editor",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Web editor library: RichTextEditor dan ImageEditor — tanpa dependensi eksternal",
   "type": "module",
   "main": "src/index.js",
@@ -20,13 +20,6 @@
   "license": "UNLICENSED",
   "private": false,
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
-    "access": "restricted"
-  },
-  "scripts": {
-    "test": "echo '@wanuky10/web-editor: jalankan test di proyek konsumen (lingkungan browser)'"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "registry": "https://npm.pkg.github.com"
   }
 }
