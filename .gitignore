@@ -1,0 +1,24 @@
+# Dependensi
+node_modules/
+
+# Environment — JANGAN PERNAH di-commit
+.env
+.env.*
+!.env.example
+
+# Tarball build (opsional — hapus baris ini jika ingin commit tarball ke repo)
+dist/*.tgz
+
+# Log
+*.log
+npm-debug.log*
+
+# Editor & OS
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+.idea/
+
+# Coverage & test output
+coverage/
+.nyc_output/

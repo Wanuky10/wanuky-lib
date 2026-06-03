@@ -1,0 +1,18 @@
+{
+  "name": "wanuky-lib",
+  "version": "1.0.0",
+  "description": "Monorepo library pribadi: template engine SSR custom dan web editor (rich text + image)",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "npm test --workspaces",
+    "test:engine": "npm test --workspace=packages/template-engine",
+    "test:editor": "npm test --workspace=packages/web-editor"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
