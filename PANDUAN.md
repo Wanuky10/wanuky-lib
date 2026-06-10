@@ -28,16 +28,38 @@ Library internal untuk proyek website pribadi. Terdiri dari dua package:
 
 ## Instalasi
 
-### Cara 1 — `file:` (development lokal, satu mesin)
+### Cara 1 — GitHub Packages (disarankan)
+
+Pastikan `.npmrc` sudah dikonfigurasi untuk scope `@wanuky10`:
+
+```toml
+@wanuky10:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+```
+
+Set token sebelum `npm install`:
+
+```powershell
+$env:NODE_AUTH_TOKEN = "ghp_..."
+```
 
 ```json
 "dependencies": {
-  "@wanuky/template-engine": "file:../../wanuky-lib/packages/template-engine",
-  "@wanuky/web-editor":       "file:../../wanuky-lib/packages/web-editor"
+  "@wanuky10/template-engine": "1.1.0",
+  "@wanuky10/web-editor": "1.2.0"
 }
 ```
 
-### Cara 2 — git+ssh (disarankan, bekerja di semua mesin)
+### Cara 2 — `file:` (development lokal, satu mesin)
+
+```json
+"dependencies": {
+  "@wanuky10/template-engine": "file:../../wanuky-lib/packages/template-engine",
+  "@wanuky10/web-editor":       "file:../../wanuky-lib/packages/web-editor"
+}
+```
+
+### Cara 3 — git+ssh (bekerja di semua mesin)
 
 ```bash
 # Di wanuky-lib: buat tag versi sekali per release
@@ -47,12 +69,12 @@ git push origin v1.1.0
 
 ```json
 "dependencies": {
-  "@wanuky/template-engine": "git+ssh://git@github.com/wanuky/wanuky-lib.git#v1.1.0",
-  "@wanuky/web-editor":       "git+ssh://git@github.com/wanuky/wanuky-lib.git#v1.1.0"
+  "@wanuky10/template-engine": "git+ssh://git@github.com/Wanuky10/wanuky-lib.git#v1.1.0",
+  "@wanuky10/web-editor":       "git+ssh://git@github.com/Wanuky10/wanuky-lib.git#v1.1.0"
 }
 ```
 
-### Cara 3 — tarball (paling stabil, tidak butuh akses git saat deploy)
+### Cara 4 — tarball (paling stabil, tidak butuh akses git saat deploy)
 
 ```bash
 # Di wanuky-lib, jalankan sekali per release:
@@ -63,8 +85,8 @@ cd packages/web-editor      && npm pack --pack-destination ../../dist/
 
 ```json
 "dependencies": {
-  "@wanuky/template-engine": "file:../../wanuky-lib/dist/wanuky-template-engine-1.1.0.tgz",
-  "@wanuky/web-editor":       "file:../../wanuky-lib/dist/wanuky-web-editor-1.1.0.tgz"
+  "@wanuky10/template-engine": "file:../../wanuky-lib/dist/wanuky10-template-engine-1.1.0.tgz",
+  "@wanuky10/web-editor":       "file:../../wanuky-lib/dist/wanuky10-web-editor-1.2.0.tgz"
 }
 ```
 
