@@ -1,7 +1,7 @@
 {
   "name": "@wanuky10/web-editor",
-  "version": "1.2.0",
-  "description": "Web editor library: RichTextEditor dan ImageEditor — tanpa dependensi eksternal",
+  "version": "2.0.0",
+  "description": "Web editor library: RichTextEditor (contenteditable, toolbar modular, superscript/subscript, alignment, color picker, font size, table, paste cleanup, image upload, markdown shortcuts, event system on/off/emit, history/undo) dan ImageEditor v2.0.0 (Canvas: crop rect/circle, zoom, flip, rotate, rotasi bebas, filter via ctx.filter, preset filter, rasio aspek crop, history/undo, pinch-to-zoom, muatUrl, event system) — tanpa dependensi eksternal",
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -20,6 +20,10 @@
   "license": "UNLICENSED",
   "private": false,
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

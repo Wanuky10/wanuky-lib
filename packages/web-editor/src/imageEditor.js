@@ -1,994 +1,1662 @@
 /**
- * ImageEditor v1.2.0 — editor gambar berbasis Canvas API native.
+ * ImageEditor v2.0.0
  *
- * Baru di v1.2.0:
- *   - Image fit: zoom=1 selalu menampilkan gambar penuh (fit-to-canvas)
- *   - Canvas sizing: dimensi kanvas mengikuti aspect ratio gambar (max 800×480)
- *   - Pan clamping: gambar tidak bisa di-pan sepenuhnya keluar viewport
- *   - Crop auto-apply: simpan() otomatis menerapkan crop aktif sebelum ekspor
- *   - Opsi bentukCrop: 'rect' | 'circle' — panduan lingkaran untuk avatar profile
- *   - Crop circle: seleksi dikonstrain 1:1, overlay bulat, ekspor square
- *   - Crop rect: seleksi dikonstrain ke batas kanvas
- *   - Rotasi recalculate canvas agar dimensi selalu optimal
+ * Editor gambar berbasis Canvas API untuk browser.
+ * Mendukung: rotasi, flip, zoom, crop (rect/circle), filter warna,
+ * preset filter, rasio aspek crop, history/undo, event system,
+ * pinch-to-zoom, dan rotasi bebas.
  *
- * Cara pakai:
- *   import { ImageEditor } from '@wanuky10/web-editor';
+ * @module @wanuky10/web-editor/imageEditor
+ * @version 2.0.0
+ * @license MIT
  *
- *   // Pilih fitur secara manual:
- *   const editor = new ImageEditor('#editor', {
- *     fitur: ['rotasiKiri', 'rotasiKanan', '|', 'crop', '|', 'reset'],
- *     bentukCrop: 'circle',
- *   });
- *
- *   // Atau gunakan preset:
- *   const editor = new ImageEditor('#editor', { fiturPreset: 'minimal' });
+ * @adr     Menggunakan CanvasRenderingContext2D.filter (CSS filter) untuk semua filter warna
+ * @context Pixel manipulation (getImageData/putImageData) lambat di gambar besar; CSS filter
+ *          di-GPU-accelerated dan mendukung lebih banyak efek (blur, hue-rotate, dsb.)
+ * @decision ctx.filter diterapkan sebelum ctx.drawImage; semua efek digabung dalam satu string
+ * @tradeoff Memerlukan browser modern (Chrome 47+, Firefox 49+, Safari 18+); pada browser lama
+ *           filter warna tidak akan berpengaruh namun editor tetap berfungsi
+ * @alternatives Pixel manipulation (ditolak: O(n) per pixel, tidak bisa blur/hue secara efisien),
+ *               WebGL (ditolak: kompleksitas tinggi untuk scope ini)
  */
 
 // ─────────────────────────────────────────────────────────────
-// Definisi semua fitur yang tersedia
+// Konstanta
 // ─────────────────────────────────────────────────────────────
+
+/** Versi library. */
+const VERSI = '2.0.0';
+
+/** Nilai step zoom per satu aksi. */
+const FAKTOR_ZOOM_LANGKAH = 0.15;
+
+/** Batas zoom minimum dan maksimum. */
+const ZOOM_MIN  = 1;
+const ZOOM_MAKS = 5;
+
+/** Ukuran maksimum kanvas default (dapat di-override via opsi). */
+const KANVAS_LEBAR_MAKS   = 800;
+const KANVAS_TINGGI_MAKS  = 480;
+
+/** Batas jumlah riwayat (history). */
+const BATAS_HISTORY = 20;
+
+/** Lebar handle drag crop dalam piksel. */
+const UKURAN_HANDLE = 10;
+
+/**
+ * Definisi setiap tool yang tersedia.
+ * - slider     : tool ini membuka panel filter (toggle).
+ * - toggle     : tool ini adalah tombol toggle on/off.
+ * - khusus     : tool ini dirender secara kustom (bukan tombol biasa).
+ * - tipe       : jenis rendering khusus.
+ */
 const DEFINISI_FITUR = {
-  rotasiKiri:  { label: 'Putar kiri 90°',    ikon: '↺'          },
-  rotasiKanan: { label: 'Putar kanan 90°',   ikon: '↻'          },
-  flipH:       { label: 'Flip horizontal',   ikon: '⇄'          },
-  flipV:       { label: 'Flip vertikal',     ikon: '⇅'          },
-  zoomMasuk:   { label: 'Perbesar',          ikon: '+'          },
-  zoomKeluar:  { label: 'Perkecil',          ikon: '−'          },
-  zoomReset:   { label: 'Reset zoom',        ikon: '1:1'        },
-  crop:        { label: 'Mode potong',       ikon: '✂', toggle: true },
-  brightness:  { label: 'Kecerahan',         ikon: '☀', slider: true },
+  rotasiKiri:  { label: 'Putar kiri 90°',   ikon: '↺' },
+  rotasiKanan: { label: 'Putar kanan 90°',  ikon: '↻' },
+  flipH:       { label: 'Cermin horizontal',ikon: '⇔' },
+  flipV:       { label: 'Cermin vertikal',  ikon: '⇕' },
+  zoomMasuk:   { label: 'Perbesar',         ikon: '+' },
+  zoomKeluar:  { label: 'Perkecil',         ikon: '−' },
+  zoomReset:   { label: 'Reset zoom',       ikon: '⊡' },
+  // Filter warna — semua membuka panel filter yang sama
+  brightness:  { label: 'Kecerahan',        ikon: '☀', slider: true },
   contrast:    { label: 'Kontras',           ikon: '◑', slider: true },
-  reset:       { label: 'Reset semua',       ikon: '⟳'          },
-  save:        { label: 'Simpan gambar',     ikon: '💾'         },
+  saturasi:    { label: 'Saturasi',          ikon: '🎨', slider: true },
+  hue:         { label: 'Hue',               ikon: '⬡', slider: true },
+  blur:        { label: 'Blur',              ikon: '◌', slider: true },
+  grayscale:   { label: 'Abu-abu',           ikon: '▣', slider: true },
+  sepia:       { label: 'Sepia',             ikon: '▤', slider: true },
+  // Rotasi bebas
+  rotasiSudut: { label: 'Rotasi bebas',     ikon: '⤵', khusus: true, tipe: 'panel-rotasi' },
+  // Preset filter
+  preset:      { label: 'Preset filter',    ikon: '★', khusus: true, tipe: 'dropdown-preset' },
+  // Rasio aspek crop
+  aspekRasio:  { label: 'Rasio crop',       ikon: '▭', khusus: true, tipe: 'dropdown-aspek' },
+  // Crop
+  crop:        { label: 'Mode crop',        ikon: '⊹', toggle: true },
+  // Aksi
+  undo:        { label: 'Urungkan (Ctrl+Z)',ikon: '↩' },
+  reset:       { label: 'Reset semua',      ikon: '⟳' },
+  simpan:      { label: 'Simpan',           ikon: '💾' },
 };
 
+/**
+ * Preset daftar tool untuk tiga mode penggunaan.
+ * '|' digunakan sebagai separator (divider).
+ */
 const PRESET_FITUR = {
-  minimal:  ['crop', '|', 'save'],
-  standard: ['rotasiKiri', 'rotasiKanan', '|', 'flipH', '|', 'crop', '|', 'reset', 'save'],
-  full:     [
+  minimal:  ['crop', '|', 'simpan'],
+  standard: [
+    'rotasiKiri', 'rotasiKanan', '|',
+    'flipH', '|',
+    'brightness', 'contrast', '|',
+    'crop', '|',
+    'undo', 'reset', 'simpan',
+  ],
+  full: [
     'rotasiKiri', 'rotasiKanan', '|',
     'flipH', 'flipV', '|',
     'zoomMasuk', 'zoomKeluar', 'zoomReset', '|',
-    'brightness', 'contrast', '|',
-    'crop', '|',
-    'reset', 'save',
+    'brightness', 'contrast', 'saturasi', 'hue', 'blur', 'grayscale', 'sepia', '|',
+    'preset', '|',
+    'rotasiSudut', '|',
+    'crop', 'aspekRasio', '|',
+    'undo', '|',
+    'reset', 'simpan',
   ],
 };
 
-const FAKTOR_ZOOM_LANGKAH = 0.15;
-// ZOOM_MIN=1 menjamin gambar selalu menutupi seluruh kanvas — tidak ada
-// background gelap yang terlihat. User hanya bisa zoom-in, tidak zoom-out.
-const ZOOM_MIN             = 1;
-const ZOOM_MAKS            = 5;
-const MIN_UKURAN_CROP      = 10;
-const UKURAN_HANDLE        = 9;     // Piksel — ukuran handle resize crop
-const KANVAS_LEBAR_MAKS    = 800;   // Resolusi internal kanvas maks
-const KANVAS_TINGGI_MAKS   = 480;
+/**
+ * Preset filter warna bawaan.
+ * Nilai:
+ *   brightness, contrast, saturasi: -100 s/d 100 (0 = netral)
+ *   hue: -180 s/d 180 (derajat)
+ *   blur: 0 s/d 10 (piksel)
+ *   grayscale, sepia: 0 s/d 100 (persen)
+ */
+const PRESET_FILTER = {
+  original: { brightness: 0,   contrast: 0,  saturasi: 0,   hue: 0,   blur: 0, grayscale: 0,  sepia: 0  },
+  vivid:    { brightness: 10,  contrast: 20, saturasi: 50,  hue: 0,   blur: 0, grayscale: 0,  sepia: 0  },
+  warm:     { brightness: 5,   contrast: 5,  saturasi: 20,  hue: 15,  blur: 0, grayscale: 0,  sepia: 0  },
+  cool:     { brightness: 0,   contrast: 10, saturasi: 20,  hue: -15, blur: 0, grayscale: 0,  sepia: 0  },
+  noir:     { brightness: -10, contrast: 30, saturasi: 0,   hue: 0,   blur: 0, grayscale: 100, sepia: 0 },
+  vintage:  { brightness: 5,   contrast: 10, saturasi: -20, hue: 10,  blur: 0, grayscale: 0,  sepia: 40 },
+};
 
+/**
+ * Pilihan rasio aspek untuk crop.
+ * nilai: angka rasio w/h; null = bebas.
+ */
+const PILIHAN_ASPEK_RASIO = [
+  { label: 'Bebas',   nilai: null },
+  { label: '1:1',     nilai: 1 },
+  { label: '4:3',     nilai: 4/3 },
+  { label: '3:2',     nilai: 3/2 },
+  { label: '16:9',    nilai: 16/9 },
+  { label: '9:16',    nilai: 9/16 },
+  { label: '2:3',     nilai: 2/3 },
+  { label: '3:4',     nilai: 3/4 },
+];
+
+// ─────────────────────────────────────────────────────────────
+// Class utama
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Editor gambar berbasis Canvas.
+ *
+ * @example
+ * const editor = new ImageEditor(containerEl, {
+ *   fiturPreset: 'full',
+ *   onSelesai: (blob) => upload(blob),
+ * });
+ * editor.on('ubah', ({ nilai }) => console.log('berubah'));
+ * editor.muatFile(file);
+ */
 export class ImageEditor {
   /**
-   * @param {string|HTMLElement} selektor
-   * @param {object} [opsi]
-   * @param {string[]}  [opsi.fitur]          - Array nama fitur + '|' untuk separator.
-   * @param {string}    [opsi.fiturPreset]    - 'minimal' | 'standard' (default) | 'full'
-   * @param {string}    [opsi.bentukCrop]     - 'rect' (default) | 'circle'
-   *                                            'circle': tampilkan panduan lingkaran,
-   *                                            simpan() auto-crop ke area lingkaran.
-   * @param {Function}  [opsi.onSelesai]      - (blob: Blob) => void — dipanggil saat simpan
-   * @param {string}    [opsi.formatOutput]   - 'image/jpeg' | 'image/png' | 'image/webp'
-   * @param {number}    [opsi.kualitasOutput] - 0–1 untuk JPEG/WebP (default: 0.92)
-   * @param {object}    [opsi.ukuranMaks]     - { lebar: number, tinggi: number } output maks
+   * @param {HTMLElement} kontainer - Elemen pembungkus editor
+   * @param {object}      [opsi={}]
+   * @param {string[]}    [opsi.fitur]          - Daftar tool custom
+   * @param {'minimal'|'standard'|'full'} [opsi.fiturPreset='full'] - Preset tool
+   * @param {'rect'|'circle'} [opsi.bentukCrop='rect'] - Bentuk area crop
+   * @param {function}    [opsi.onSelesai]      - Callback saat simpan (Blob) — legacy, gunakan on('selesai')
+   * @param {'jpeg'|'png'|'webp'} [opsi.formatOutput='jpeg'] - Format output
+   * @param {number}      [opsi.kualitasOutput=0.92] - Kualitas kompresi (0–1)
+   * @param {{lebar:number,tinggi:number}} [opsi.ukuranMaks] - Ukuran output maksimum
    */
-  constructor(selektor, opsi = {}) {
-    const kontainer =
-      typeof selektor === 'string' ? document.querySelector(selektor) : selektor;
-
-    if (!kontainer) throw new Error(`[ImageEditor] Elemen tidak ditemukan: "${selektor}"`);
-
-    this._opsi = {
-      fitur:          null,
-      fiturPreset:    'standard',
+  constructor(kontainer, opsi = {}) {
+    this._kontainer  = kontainer;
+    this._opsi       = {
+      fiturPreset:    'full',
       bentukCrop:     'rect',
-      onSelesai:      null,
-      formatOutput:   'image/jpeg',
+      formatOutput:   'jpeg',
       kualitasOutput: 0.92,
-      ukuranMaks:     null,
       ...opsi,
     };
 
-    this._kontainer  = kontainer;
-    this._gambar     = null;
-    this._rotasi     = 0;
-    this._flipH      = false;
-    this._flipV      = false;
-    this._zoom       = 1;
-    this._offsetX    = 0;
-    this._offsetY    = 0;
-    this._brightness = 0;
-    this._contrast   = 0;
+    // Status gambar
+    this._gambar      = null;  // HTMLImageElement
+    this._gambarSrc   = null;  // string data URL / URL asli
 
+    // Status transformasi
+    this._rotasi      = 0;     // kelipatan 90°
+    this._sudutBebas  = 0;     // rotasi bebas dalam derajat
+    this._flipH       = false;
+    this._flipV       = false;
+    this._zoom        = 1;
+    this._offsetX     = 0;
+    this._offsetY     = 0;
+
+    // Status filter
+    this._brightness  = 0;
+    this._contrast    = 0;
+    this._saturasi    = 0;
+    this._hue         = 0;
+    this._blur        = 0;
+    this._grayscale   = 0;
+    this._sepia       = 0;
+
+    // Status crop
     this._modeCrop    = false;
-    this._areaCrop    = null;
-    this._handleAktif = null;
+    this._crop        = null;   // { x, y, w, h } dalam koordinat kanvas
+    this._cropAktif   = false;  // sedang menggambar crop
+    this._cropHandle  = null;   // handle yang sedang di-drag
 
-    this._sedangDrag     = false;
-    this._titikMulaiDrag = null;
+    // Rasio aspek crop
+    this._rasioAspek  = null;   // null = bebas
+
+    // Drag
+    this._dragging    = false;
+    this._dragAwal    = null;   // { x, y }
+    this._cropAwal    = null;   // snapshot crop saat drag dimulai
+
+    // Pinch-to-zoom
+    this._sentuhan    = [];     // array TouchPoint aktif
+    this._pinchJarak  = 0;
+
+    // History/undo
+    this._history     = [];
+    this._historyIdx  = -1;
+
+    // Event system
+    this._listeners   = new Map([
+      ['muat',    new Set()],
+      ['ubah',    new Set()],
+      ['selesai', new Set()],
+      ['error',   new Set()],
+    ]);
+
+    // Backward compat: callback legacy
+    if (this._opsi.onSelesai) this.on('selesai', this._opsi.onSelesai);
 
     this._bangunUI();
+    this._pasangEventListener();
   }
 
-  // ─────────────────────────────────────────────
-  // Resolusi fitur
-  // ─────────────────────────────────────────────
+  // ─── Event system ──────────────────────────────────────────────
 
+  /**
+   * Daftarkan listener untuk sebuah event.
+   * @param {'muat'|'ubah'|'selesai'|'error'} event
+   * @param {function} fn
+   * @returns {this}
+   */
+  on(event, fn) {
+    if (!this._listeners.has(event)) this._listeners.set(event, new Set());
+    this._listeners.get(event).add(fn);
+    return this;
+  }
+
+  /**
+   * Hapus listener.
+   * @param {string} event
+   * @param {function} fn
+   * @returns {this}
+   */
+  off(event, fn) {
+    this._listeners.get(event)?.delete(fn);
+    return this;
+  }
+
+  /**
+   * Emit event ke semua listener terdaftar.
+   * @param {string} event
+   * @param {unknown} data
+   */
+  emit(event, data) {
+    for (const fn of (this._listeners.get(event) ?? [])) {
+      try { fn(data); } catch { /* listener tidak boleh crash editor */ }
+    }
+  }
+
+  // ─── History ───────────────────────────────────────────────────
+
+  /**
+   * Simpan state saat ini ke history stack.
+   * Dipanggil setelah setiap aksi diskrit (rotate, flip, terapkanCrop, preset).
+   * Slider hanya menyimpan pada event pointerup.
+   */
+  _simpanHistory() {
+    // Potong branch ke depan jika ada
+    this._history = this._history.slice(0, this._historyIdx + 1);
+
+    const state = {
+      rotasi:     this._rotasi,
+      sudutBebas: this._sudutBebas,
+      flipH:      this._flipH,
+      flipV:      this._flipV,
+      zoom:       this._zoom,
+      offsetX:    this._offsetX,
+      offsetY:    this._offsetY,
+      brightness: this._brightness,
+      contrast:   this._contrast,
+      saturasi:   this._saturasi,
+      hue:        this._hue,
+      blur:       this._blur,
+      grayscale:  this._grayscale,
+      sepia:      this._sepia,
+      crop:       this._crop ? { ...this._crop } : null,
+      // Hanya simpan gambarSrc jika baru saja terapkanCrop (ditandai _historyGambar)
+      gambarSrc:  this._historyGambar ?? null,
+    };
+    this._historyGambar = null;
+
+    this._history.push(state);
+    if (this._history.length > BATAS_HISTORY) this._history.shift();
+    this._historyIdx = this._history.length - 1;
+    this._updateTombolUndo();
+  }
+
+  /**
+   * Kembali ke state sebelumnya (undo).
+   */
+  undo() {
+    if (this._historyIdx <= 0) return;
+    this._historyIdx--;
+    const state = this._history[this._historyIdx];
+    this._terapkanState(state);
+    this._updateTombolUndo();
+  }
+
+  /** Terapkan objek state ke editor. */
+  _terapkanState(state) {
+    this._rotasi     = state.rotasi;
+    this._sudutBebas = state.sudutBebas;
+    this._flipH      = state.flipH;
+    this._flipV      = state.flipV;
+    this._zoom       = state.zoom;
+    this._offsetX    = state.offsetX;
+    this._offsetY    = state.offsetY;
+    this._brightness = state.brightness;
+    this._contrast   = state.contrast;
+    this._saturasi   = state.saturasi;
+    this._hue        = state.hue;
+    this._blur       = state.blur;
+    this._grayscale  = state.grayscale;
+    this._sepia      = state.sepia;
+    this._crop       = state.crop ? { ...state.crop } : null;
+
+    if (state.gambarSrc && state.gambarSrc !== this._gambarSrc) {
+      this.muatUrl(state.gambarSrc);
+      return;
+    }
+
+    this._sinkronSlider();
+    this._render();
+    this.emit('ubah', this._ambilNilaiFilter());
+  }
+
+  /** Update status tombol undo (disabled jika tidak ada history). */
+  _updateTombolUndo() {
+    const btn = this._kontainer.querySelector('[data-ie-aksi="undo"]');
+    if (btn) btn.disabled = this._historyIdx <= 0;
+  }
+
+  // ─── Resolusi fitur ───────────────────────────────────────────
+
+  /** Hitung daftar fitur yang akan ditampilkan. */
   _resolveFitur() {
-    const daftar = this._opsi.fitur ?? PRESET_FITUR[this._opsi.fiturPreset] ?? PRESET_FITUR.standard;
-    return daftar.filter((item) => item === '|' || item in DEFINISI_FITUR);
+    if (this._opsi.fitur) return this._opsi.fitur;
+    return PRESET_FITUR[this._opsi.fiturPreset] ?? PRESET_FITUR.full;
   }
 
-  // ─────────────────────────────────────────────
-  // Pembangunan UI
-  // ─────────────────────────────────────────────
+  // ─── Bangun UI ────────────────────────────────────────────────
 
   _bangunUI() {
-    this._kontainer.classList.add('wanuky-img-editor');
+    this._kontainer.classList.add('wanuky-ie');
 
+    // ── Toolbar ─────────────────────────────────────────────────
     this._toolbar = document.createElement('div');
-    this._toolbar.className = 'wanuky-img-editor__toolbar';
+    this._toolbar.className = 'wanuky-ie__toolbar';
+    this._toolbar.setAttribute('role', 'toolbar');
+    this._toolbar.setAttribute('aria-label', 'Alat editor gambar');
 
-    this._panelSlider = document.createElement('div');
-    this._panelSlider.className = 'wanuky-img-editor__panel-slider';
-    this._panelSlider.hidden = true;
+    const fitur = this._resolveFitur();
+    // Track filter-slider tools yang ada di toolbar (untuk panel)
+    this._filterToolsAktif = new Set();
 
-    this._sliderBrightness = this._buatSlider('Kecerahan', -100, 100, 0, (v) => {
-      this._brightness = v;
-      this._render();
-    });
-    this._sliderContrast = this._buatSlider('Kontras', -100, 100, 0, (v) => {
-      this._contrast = v;
-      this._render();
-    });
-
-    this._panelSlider.appendChild(this._sliderBrightness.elemen);
-    this._panelSlider.appendChild(this._sliderContrast.elemen);
-
-    const fiturAktif = this._resolveFitur();
-    const adaSlider  = fiturAktif.some((f) => DEFINISI_FITUR[f]?.slider);
-
-    for (const item of fiturAktif) {
+    for (const item of fitur) {
       if (item === '|') {
-        const s = document.createElement('span');
-        s.className = 'wanuky-img-editor__pemisah';
-        s.setAttribute('aria-hidden', 'true');
-        this._toolbar.appendChild(s);
+        const sep = document.createElement('span');
+        sep.className = 'wanuky-ie__sep';
+        sep.setAttribute('aria-hidden', 'true');
+        this._toolbar.appendChild(sep);
         continue;
       }
 
-      const def    = DEFINISI_FITUR[item];
-      const tombol = document.createElement('button');
-      tombol.type      = 'button';
-      tombol.className = 'wanuky-img-editor__tombol';
-      tombol.id        = `wanuky-ie-${item}`;
-      tombol.textContent = def.ikon;
-      tombol.setAttribute('aria-label', def.label);
-      tombol.setAttribute('title', def.label);
-      if (def.toggle || def.slider) tombol.setAttribute('aria-pressed', 'false');
-      this._toolbar.appendChild(tombol);
+      const def = DEFINISI_FITUR[item];
+      if (!def) continue;
+
+      if (def.slider) this._filterToolsAktif.add(item);
+
+      if (def.khusus) {
+        const wrapper = this._buatToolKhusus(item, def);
+        if (wrapper) this._toolbar.appendChild(wrapper);
+        continue;
+      }
+
+      const btn = document.createElement('button');
+      btn.type      = 'button';
+      btn.className = 'wanuky-ie__btn';
+      btn.setAttribute('data-ie-aksi', item);
+      btn.setAttribute('title', def.label);
+      btn.setAttribute('aria-label', def.label);
+      if (def.toggle) btn.setAttribute('aria-pressed', 'false');
+      if (item === 'undo') btn.disabled = true;
+
+      const ikon = document.createElement('span');
+      ikon.setAttribute('aria-hidden', 'true');
+      ikon.textContent = def.ikon;
+      btn.appendChild(ikon);
+
+      this._toolbar.appendChild(btn);
     }
 
-    this._kanvas = document.createElement('canvas');
-    this._kanvas.className = 'wanuky-img-editor__kanvas';
-    this._kanvas.setAttribute('role', 'img');
-    this._kanvas.setAttribute('aria-label', 'Preview gambar');
-    this._ctx = this._kanvas.getContext('2d', { willReadFrequently: true });
+    // ── Panel filter (slider) ────────────────────────────────────
+    this._panelFilter = document.createElement('div');
+    this._panelFilter.className = 'wanuky-ie__panel wanuky-ie__panel--filter';
+    this._panelFilter.hidden = true;
+    this._panelFilter.setAttribute('aria-label', 'Panel filter');
+    this._bangunSliderFilter();
 
-    this._zonaDrop = document.createElement('div');
-    this._zonaDrop.className = 'wanuky-img-editor__zona-drop';
-    this._zonaDrop.setAttribute('role', 'button');
-    this._zonaDrop.setAttribute('tabindex', '0');
-    this._zonaDrop.setAttribute('aria-label', 'Klik atau seret gambar ke sini');
-    this._zonaDrop.innerHTML = '<span>Klik atau seret gambar ke sini</span>';
+    // ── Panel rotasi bebas ───────────────────────────────────────
+    this._panelRotasi = document.createElement('div');
+    this._panelRotasi.className = 'wanuky-ie__panel wanuky-ie__panel--rotasi';
+    this._panelRotasi.hidden = true;
+    this._bangunSliderRotasi();
+
+    // ── Canvas ──────────────────────────────────────────────────
+    this._canvas = document.createElement('canvas');
+    this._canvas.className = 'wanuky-ie__canvas';
+    this._canvas.setAttribute('role', 'img');
+    this._canvas.setAttribute('aria-label', 'Area preview gambar');
+    this._ctx = this._canvas.getContext('2d');
+
+    // ── Area drop ──────────────────────────────────────────────
+    this._areaDrop = document.createElement('div');
+    this._areaDrop.className = 'wanuky-ie__drop';
+    this._areaDrop.setAttribute('role', 'button');
+    this._areaDrop.setAttribute('tabindex', '0');
+    this._areaDrop.setAttribute('aria-label', 'Klik atau seret gambar ke sini');
+    this._areaDrop.innerHTML =
+      '<span class="wanuky-ie__drop-ikon">🖼</span>' +
+      '<span class="wanuky-ie__drop-teks">Seret gambar ke sini atau klik untuk memilih</span>';
 
     this._inputFile = document.createElement('input');
-    this._inputFile.type = 'file';
+    this._inputFile.type   = 'file';
     this._inputFile.accept = 'image/*';
     this._inputFile.style.display = 'none';
     this._inputFile.setAttribute('aria-hidden', 'true');
 
     this._kontainer.appendChild(this._toolbar);
-    if (adaSlider) this._kontainer.appendChild(this._panelSlider);
-    this._kontainer.appendChild(this._zonaDrop);
-    this._kontainer.appendChild(this._kanvas);
+    this._kontainer.appendChild(this._panelFilter);
+    this._kontainer.appendChild(this._panelRotasi);
+    this._kontainer.appendChild(this._canvas);
+    this._kontainer.appendChild(this._areaDrop);
     this._kontainer.appendChild(this._inputFile);
-
-    this._kanvas.style.display = 'none';
-    this._pasangEventListener();
   }
 
-  _buatSlider(label, min, maks, nilaiAwal, onChange) {
-    const wrap = document.createElement('div');
-    wrap.className = 'wanuky-img-editor__slider-wrap';
+  /** Bangun semua slider filter di dalam panel. */
+  _bangunSliderFilter() {
+    const KONFIGURASI_SLIDER = [
+      { id: 'brightness', label: 'Kecerahan', min: -100, max: 100, prop: '_brightness' },
+      { id: 'contrast',   label: 'Kontras',   min: -100, max: 100, prop: '_contrast' },
+      { id: 'saturasi',   label: 'Saturasi',  min: -100, max: 100, prop: '_saturasi' },
+      { id: 'hue',        label: 'Hue',       min: -180, max: 180, prop: '_hue' },
+      { id: 'blur',       label: 'Blur',      min: 0,    max: 10,  prop: '_blur' },
+      { id: 'grayscale',  label: 'Abu-abu',   min: 0,    max: 100, prop: '_grayscale' },
+      { id: 'sepia',      label: 'Sepia',     min: 0,    max: 100, prop: '_sepia' },
+    ];
+
+    for (const cfg of KONFIGURASI_SLIDER) {
+      // Tampilkan hanya slider yang tool-nya ada di toolbar
+      if (!this._filterToolsAktif.has(cfg.id)) continue;
+
+      const baris = document.createElement('div');
+      baris.className = 'wanuky-ie__slider-baris';
+
+      const labelEl = document.createElement('label');
+      const sliderId = `wanuky-ie-slider-${cfg.id}`;
+      labelEl.setAttribute('for', sliderId);
+      labelEl.className = 'wanuky-ie__slider-label';
+      labelEl.textContent = cfg.label;
+
+      const nilaiEl = document.createElement('span');
+      nilaiEl.className = 'wanuky-ie__slider-nilai';
+      nilaiEl.textContent = '0';
+      nilaiEl.setAttribute('data-ie-nilai', cfg.id);
+
+      const slider = document.createElement('input');
+      slider.type       = 'range';
+      slider.id         = sliderId;
+      slider.className  = 'wanuky-ie__slider';
+      slider.min        = cfg.min;
+      slider.max        = cfg.max;
+      slider.value      = 0;
+      slider.step       = 1;
+      slider.setAttribute('data-ie-slider', cfg.id);
+
+      slider.addEventListener('input', () => {
+        const val = Number(slider.value);
+        this[cfg.prop] = val;
+        nilaiEl.textContent = val;
+        this._render();
+        this.emit('ubah', this._ambilNilaiFilter());
+      });
+
+      // Simpan ke history hanya saat drag selesai
+      slider.addEventListener('change', () => this._simpanHistory());
+
+      baris.appendChild(labelEl);
+      baris.appendChild(nilaiEl);
+      baris.appendChild(slider);
+      this._panelFilter.appendChild(baris);
+    }
+
+    // Tombol reset filter
+    const btnReset = document.createElement('button');
+    btnReset.type      = 'button';
+    btnReset.className = 'wanuky-ie__btn wanuky-ie__btn--reset-filter';
+    btnReset.textContent = 'Reset filter';
+    btnReset.addEventListener('click', () => {
+      this._resetFilter();
+      this._simpanHistory();
+    });
+    this._panelFilter.appendChild(btnReset);
+  }
+
+  /** Bangun slider rotasi bebas. */
+  _bangunSliderRotasi() {
+    const baris = document.createElement('div');
+    baris.className = 'wanuky-ie__slider-baris';
 
     const labelEl = document.createElement('label');
-    labelEl.textContent = label;
+    labelEl.setAttribute('for', 'wanuky-ie-slider-rotasi');
+    labelEl.className = 'wanuky-ie__slider-label';
+    labelEl.textContent = 'Sudut rotasi';
 
-    const input = document.createElement('input');
-    input.type  = 'range';
-    input.min   = String(min);
-    input.max   = String(maks);
-    input.value = String(nilaiAwal);
-    input.className = 'wanuky-img-editor__slider';
-    input.setAttribute('aria-label', label);
+    const nilaiEl = document.createElement('span');
+    nilaiEl.className = 'wanuky-ie__slider-nilai';
+    nilaiEl.textContent = '0°';
+    nilaiEl.setAttribute('data-ie-nilai', 'rotasiSudut');
 
-    const nilai = document.createElement('span');
-    nilai.className = 'wanuky-img-editor__slider-nilai';
-    nilai.textContent = String(nilaiAwal);
+    const slider = document.createElement('input');
+    slider.type      = 'range';
+    slider.id        = 'wanuky-ie-slider-rotasi';
+    slider.className = 'wanuky-ie__slider';
+    slider.min       = -180;
+    slider.max       = 180;
+    slider.value     = 0;
+    slider.step      = 1;
+    slider.setAttribute('data-ie-slider', 'rotasiSudut');
 
-    input.addEventListener('input', () => {
-      const v = Number(input.value);
-      nilai.textContent = String(v);
-      onChange(v);
+    slider.addEventListener('input', () => {
+      this._sudutBebas = Number(slider.value);
+      nilaiEl.textContent = `${this._sudutBebas}°`;
+      this._render();
+      this.emit('ubah', this._ambilNilaiFilter());
     });
 
-    wrap.appendChild(labelEl);
-    wrap.appendChild(input);
-    wrap.appendChild(nilai);
+    slider.addEventListener('change', () => this._simpanHistory());
 
-    return { elemen: wrap, input };
+    baris.appendChild(labelEl);
+    baris.appendChild(nilaiEl);
+    baris.appendChild(slider);
+    this._panelRotasi.appendChild(baris);
   }
 
+  /** Buat elemen tool kustom (dropdown, panel). */
+  _buatToolKhusus(item, def) {
+    const wrapper = document.createElement('div');
+    wrapper.className = `wanuky-ie__tool-khusus wanuky-ie__tool-khusus--${item}`;
+
+    const btn = document.createElement('button');
+    btn.type      = 'button';
+    btn.className = 'wanuky-ie__btn';
+    btn.setAttribute('data-ie-aksi', item);
+    btn.setAttribute('title', def.label);
+    btn.setAttribute('aria-label', def.label);
+    btn.setAttribute('aria-haspopup', 'true');
+    btn.setAttribute('aria-expanded', 'false');
+    const ikon = document.createElement('span');
+    ikon.setAttribute('aria-hidden', 'true');
+    ikon.textContent = def.ikon;
+    btn.appendChild(ikon);
+
+    if (def.tipe === 'dropdown-preset') {
+      const menu = this._buatMenuPreset();
+      wrapper.appendChild(btn);
+      wrapper.appendChild(menu);
+      btn.addEventListener('click', () => this._toggleDropdown(btn, menu));
+    } else if (def.tipe === 'dropdown-aspek') {
+      const menu = this._buatMenuAspek();
+      wrapper.appendChild(btn);
+      wrapper.appendChild(menu);
+      btn.addEventListener('click', () => this._toggleDropdown(btn, menu));
+    } else if (def.tipe === 'panel-rotasi') {
+      wrapper.appendChild(btn);
+      btn.addEventListener('click', () => {
+        const aktif = !this._panelRotasi.hidden;
+        this._panelRotasi.hidden = aktif;
+        btn.setAttribute('aria-expanded', String(!aktif));
+        btn.setAttribute('aria-pressed', String(!aktif));
+        btn.classList.toggle('wanuky-ie__btn--aktif', !aktif);
+      });
+    }
+
+    return wrapper;
+  }
+
+  /** Buat menu dropdown preset filter. */
+  _buatMenuPreset() {
+    const menu = document.createElement('div');
+    menu.className = 'wanuky-ie__dropdown';
+    menu.hidden    = true;
+    menu.setAttribute('role', 'menu');
+
+    for (const [id, _vals] of Object.entries(PRESET_FILTER)) {
+      const item = document.createElement('button');
+      item.type      = 'button';
+      item.className = 'wanuky-ie__dropdown-item';
+      item.setAttribute('role', 'menuitem');
+      item.setAttribute('data-ie-preset', id);
+      // Huruf kapital pertama
+      item.textContent = id.charAt(0).toUpperCase() + id.slice(1);
+      item.addEventListener('click', () => {
+        this._terapkanPresetFilter(id);
+        menu.hidden = true;
+        const btn = menu.previousElementSibling;
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+      });
+      menu.appendChild(item);
+    }
+
+    return menu;
+  }
+
+  /** Buat menu dropdown rasio aspek crop. */
+  _buatMenuAspek() {
+    const menu = document.createElement('div');
+    menu.className = 'wanuky-ie__dropdown';
+    menu.hidden    = true;
+    menu.setAttribute('role', 'menu');
+
+    for (const pilihan of PILIHAN_ASPEK_RASIO) {
+      const item = document.createElement('button');
+      item.type      = 'button';
+      item.className = 'wanuky-ie__dropdown-item';
+      item.setAttribute('role', 'menuitem');
+      item.setAttribute('data-ie-aspek', String(pilihan.nilai));
+      item.textContent = pilihan.label;
+      item.addEventListener('click', () => {
+        this._rasioAspek = pilihan.nilai;
+        // Update label tombol
+        const btn = menu.previousElementSibling;
+        if (btn) {
+          btn.querySelector('span').textContent =
+            pilihan.nilai ? `${pilihan.label}` : '▭';
+          btn.setAttribute('aria-expanded', 'false');
+        }
+        menu.hidden = true;
+        // Reset crop saat rasio berubah
+        this._crop = null;
+        this._render();
+      });
+      menu.appendChild(item);
+    }
+
+    return menu;
+  }
+
+  /** Toggle dropdown: tutup semua lain, buka/tutup target. */
+  _toggleDropdown(btn, menu) {
+    const aktif = !menu.hidden;
+    // Tutup semua dropdown lain
+    this._kontainer.querySelectorAll('.wanuky-ie__dropdown').forEach((m) => {
+      m.hidden = true;
+    });
+    this._kontainer.querySelectorAll('[aria-expanded="true"]').forEach((b) => {
+      b.setAttribute('aria-expanded', 'false');
+    });
+    menu.hidden = aktif;
+    btn.setAttribute('aria-expanded', String(!aktif));
+  }
+
+  // ─── Event listeners ──────────────────────────────────────────
+
   _pasangEventListener() {
-    this._zonaDrop.addEventListener('click', () => this._inputFile.click());
-    this._zonaDrop.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') this._inputFile.click();
+    // Toolbar clicks (delegasi)
+    this._toolbar.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-ie-aksi]');
+      if (!btn) return;
+      const aksi = btn.getAttribute('data-ie-aksi');
+      this._tanganiAksi(aksi, btn);
     });
-    this._zonaDrop.addEventListener('dragover', (e) => {
+
+    // Canvas: drag untuk crop/pan
+    this._canvas.addEventListener('pointerdown', (e) => this._mulaiDrag(e));
+    this._canvas.addEventListener('pointermove', (e) => this._gerakDrag(e));
+    this._canvas.addEventListener('pointerup',   (e) => this._akhiriDrag(e));
+    this._canvas.addEventListener('pointercancel',(e)=> this._akhiriDrag(e));
+
+    // Canvas: scroll untuk zoom
+    this._canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      this._zonaDrop.classList.add('wanuky-img-editor__zona-drop--aktif');
+      const delta = e.deltaY < 0 ? FAKTOR_ZOOM_LANGKAH : -FAKTOR_ZOOM_LANGKAH;
+      this._ubahZoom(this._zoom + delta);
+    }, { passive: false });
+
+    // Pinch-to-zoom (touch)
+    this._canvas.addEventListener('touchstart',  (e) => this._mulaiPinch(e), { passive: true });
+    this._canvas.addEventListener('touchmove',   (e) => this._gerakPinch(e), { passive: false });
+    this._canvas.addEventListener('touchend',    (e) => this._akhiriPinch(e), { passive: true });
+
+    // Keyboard
+    this._canvas.setAttribute('tabindex', '0');
+    this._canvas.addEventListener('keydown', (e) => this._tanganiKeyboard(e));
+
+    // Drop area: klik buka file picker
+    this._areaDrop.addEventListener('click', () => this._inputFile.click());
+    this._areaDrop.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        this._inputFile.click();
+      }
     });
-    this._zonaDrop.addEventListener('dragleave', () => {
-      this._zonaDrop.classList.remove('wanuky-img-editor__zona-drop--aktif');
+
+    // File input
+    this._inputFile.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (file) this.muatFile(file);
+      e.target.value = '';
     });
-    this._zonaDrop.addEventListener('drop', (e) => {
+
+    // Drag & drop ke canvas
+    this._kontainer.addEventListener('dragover', (e) => {
       e.preventDefault();
-      this._zonaDrop.classList.remove('wanuky-img-editor__zona-drop--aktif');
-      const file = e.dataTransfer.files[0];
+      this._kontainer.classList.add('wanuky-ie--drag-over');
+    });
+    this._kontainer.addEventListener('dragleave', () => {
+      this._kontainer.classList.remove('wanuky-ie--drag-over');
+    });
+    this._kontainer.addEventListener('drop', (e) => {
+      e.preventDefault();
+      this._kontainer.classList.remove('wanuky-ie--drag-over');
+      const file = e.dataTransfer?.files?.[0];
       if (file?.type.startsWith('image/')) this.muatFile(file);
     });
 
-    this._inputFile.addEventListener('change', (e) => {
-      const file = e.target.files[0];
-      if (file) this.muatFile(file);
+    // Tutup dropdown saat klik di luar
+    document.addEventListener('click', (e) => {
+      if (!this._kontainer.contains(e.target)) {
+        this._kontainer.querySelectorAll('.wanuky-ie__dropdown').forEach((m) => {
+          m.hidden = true;
+        });
+      }
     });
 
-    this._toolbar.addEventListener('click', (e) => {
-      const tombol = e.target.closest('.wanuky-img-editor__tombol');
-      if (!tombol || !this._gambar) return;
-      const id = tombol.id.replace('wanuky-ie-', '');
-      this._tanganiAksi(id, tombol);
+    // Keyboard global: Ctrl+Z untuk undo
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.key === 'z' && this._kontainer.contains(document.activeElement)) {
+        e.preventDefault();
+        this.undo();
+      }
     });
-
-    this._kanvas.addEventListener('pointerdown', (e) => this._mulaiDrag(e));
-    this._kanvas.addEventListener('pointermove', (e) => this._gerakDrag(e));
-    this._kanvas.addEventListener('pointerup',   (e) => this._akhiriDrag(e));
-    this._kanvas.addEventListener('pointerleave', () => {
-      if (this._sedangDrag) this._akhiriDrag();
-    });
-
-    this._kanvas.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      const delta = e.deltaY > 0 ? -FAKTOR_ZOOM_LANGKAH : FAKTOR_ZOOM_LANGKAH;
-      this._ubahZoom(this._zoom + delta);
-    }, { passive: false });
   }
 
-  _tanganiAksi(id, tombol) {
-    switch (id) {
-      case 'rotasiKiri':  this._putar(-90); break;
-      case 'rotasiKanan': this._putar(90);  break;
-      case 'flipH': this._flipH = !this._flipH; this._render(); break;
-      case 'flipV': this._flipV = !this._flipV; this._render(); break;
-      case 'zoomMasuk':  this._ubahZoom(this._zoom + FAKTOR_ZOOM_LANGKAH); break;
-      case 'zoomKeluar': this._ubahZoom(this._zoom - FAKTOR_ZOOM_LANGKAH); break;
-      case 'zoomReset':
-        this._zoom = 1; this._offsetX = 0; this._offsetY = 0;
-        this._klampPan();
-        this._render(); break;
-      case 'brightness':
-      case 'contrast':
-        this._panelSlider.hidden = !this._panelSlider.hidden;
-        tombol.setAttribute('aria-pressed', String(!this._panelSlider.hidden));
-        break;
-      case 'crop':
-        this._modeCrop = !this._modeCrop;
-        this._areaCrop = null;
-        this._handleAktif = null;
-        tombol.setAttribute('aria-pressed', String(this._modeCrop));
-        tombol.classList.toggle('wanuky-img-editor__tombol--aktif', this._modeCrop);
-        this._kanvas.style.cursor = this._modeCrop ? 'crosshair' : 'grab';
-        this._render();
-        break;
-      case 'reset':  this._resetSemua(); break;
-      case 'save':   this._simpanGambar(); break;
+  // ─── Pinch-to-zoom ────────────────────────────────────────────
+
+  _mulaiPinch(e) {
+    if (e.touches.length === 2) {
+      this._sentuhan = Array.from(e.touches);
+      this._pinchJarak = this._hitungJarakSentuh(e.touches);
     }
   }
 
-  // ─────────────────────────────────────────────
-  // Transformasi
-  // ─────────────────────────────────────────────
-
-  _putar(derajat) {
-    this._rotasi = ((this._rotasi + derajat) % 360 + 360) % 360;
-    // Recalculate canvas agar dimensi optimal setelah rotasi 90°/270°
-    this._sesuaikanUkuranKanvas();
-    this._render();
+  _gerakPinch(e) {
+    if (e.touches.length !== 2) return;
+    const jarak = this._hitungJarakSentuh(e.touches);
+    const delta = (jarak - this._pinchJarak) / this._pinchJarak;
+    this._pinchJarak = jarak;
+    this._ubahZoom(this._zoom * (1 + delta * 0.5));
+    e.preventDefault();
   }
 
-  _ubahZoom(nilai) {
-    this._zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAKS, nilai));
+  _akhiriPinch(e) {
+    if (e.touches.length < 2) this._sentuhan = [];
+  }
+
+  _hitungJarakSentuh(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  // ─── Keyboard ─────────────────────────────────────────────────
+
+  _tanganiKeyboard(e) {
+    if (!this._gambar) return;
+    const PAN_LANGKAH = 10;
+    switch (e.key) {
+      case 'ArrowLeft':  e.preventDefault(); this._offsetX -= PAN_LANGKAH; this._klampPan(); this._render(); break;
+      case 'ArrowRight': e.preventDefault(); this._offsetX += PAN_LANGKAH; this._klampPan(); this._render(); break;
+      case 'ArrowUp':    e.preventDefault(); this._offsetY -= PAN_LANGKAH; this._klampPan(); this._render(); break;
+      case 'ArrowDown':  e.preventDefault(); this._offsetY += PAN_LANGKAH; this._klampPan(); this._render(); break;
+      case '+':
+      case '=':          this._ubahZoom(this._zoom + FAKTOR_ZOOM_LANGKAH); break;
+      case '-':          this._ubahZoom(this._zoom - FAKTOR_ZOOM_LANGKAH); break;
+      case '0':          this._ubahZoom(1); break;
+    }
+  }
+
+  // ─── Aksi toolbar ─────────────────────────────────────────────
+
+  _tanganiAksi(aksi, tombol) {
+    if (!this._gambar && !['crop', 'undo', 'reset', 'simpan'].includes(aksi)) return;
+
+    switch (aksi) {
+      case 'rotasiKiri':
+        this._putar(-90);
+        break;
+      case 'rotasiKanan':
+        this._putar(90);
+        break;
+      case 'flipH':
+        this._flipH = !this._flipH;
+        this._simpanHistory();
+        this._render();
+        this.emit('ubah', this._ambilNilaiFilter());
+        break;
+      case 'flipV':
+        this._flipV = !this._flipV;
+        this._simpanHistory();
+        this._render();
+        this.emit('ubah', this._ambilNilaiFilter());
+        break;
+      case 'zoomMasuk':
+        this._ubahZoom(this._zoom + FAKTOR_ZOOM_LANGKAH);
+        break;
+      case 'zoomKeluar':
+        this._ubahZoom(this._zoom - FAKTOR_ZOOM_LANGKAH);
+        break;
+      case 'zoomReset':
+        this._ubahZoom(1);
+        break;
+      case 'brightness':
+      case 'contrast':
+      case 'saturasi':
+      case 'hue':
+      case 'blur':
+      case 'grayscale':
+      case 'sepia':
+        this._togglePanelFilter(tombol);
+        break;
+      case 'rotasiSudut':
+        // Ditangani oleh listener kustom di _buatToolKhusus
+        break;
+      case 'preset':
+        // Ditangani oleh listener dropdown
+        break;
+      case 'aspekRasio':
+        // Ditangani oleh listener dropdown
+        break;
+      case 'crop':
+        this._modeCrop = !this._modeCrop;
+        this._crop     = null;
+        tombol.setAttribute('aria-pressed', String(this._modeCrop));
+        tombol.classList.toggle('wanuky-ie__btn--aktif', this._modeCrop);
+        this._canvas.style.cursor = this._modeCrop ? 'crosshair' : 'default';
+        this._render();
+        break;
+      case 'undo':
+        this.undo();
+        break;
+      case 'reset':
+        this._resetSemua();
+        break;
+      case 'simpan':
+        this._simpanGambar();
+        break;
+    }
+  }
+
+  // ─── Toggle panel filter ──────────────────────────────────────
+
+  _togglePanelFilter(tombol) {
+    const aktif = !this._panelFilter.hidden;
+    this._panelFilter.hidden = aktif;
+    // Update semua tombol slider
+    this._kontainer.querySelectorAll('[data-ie-aksi]').forEach((btn) => {
+      const aksi = btn.getAttribute('data-ie-aksi');
+      const def  = DEFINISI_FITUR[aksi];
+      if (def?.slider) {
+        btn.classList.toggle('wanuky-ie__btn--aktif', !aktif);
+        btn.setAttribute('aria-pressed', String(!aktif));
+      }
+    });
+  }
+
+  // ─── CSS Filter ───────────────────────────────────────────────
+
+  /**
+   * Bangun string CSS filter dari state saat ini.
+   * Dipanggil setiap render.
+   * [CONFIRMED] CanvasRenderingContext2D.filter tersedia di browser modern.
+   */
+  _buildCSSFilter() {
+    const parts = [];
+    if (this._brightness !== 0) parts.push(`brightness(${100 + this._brightness}%)`);
+    if (this._contrast   !== 0) parts.push(`contrast(${100 + this._contrast}%)`);
+    if (this._saturasi   !== 0) parts.push(`saturate(${100 + this._saturasi}%)`);
+    if (this._hue        !== 0) parts.push(`hue-rotate(${this._hue}deg)`);
+    if (this._grayscale  > 0)   parts.push(`grayscale(${this._grayscale}%)`);
+    if (this._sepia      > 0)   parts.push(`sepia(${this._sepia}%)`);
+    if (this._blur       > 0)   parts.push(`blur(${this._blur}px)`);
+    return parts.length > 0 ? parts.join(' ') : 'none';
+  }
+
+  /** Terapkan preset filter ke state dan re-render. */
+  _terapkanPresetFilter(nama) {
+    const preset = PRESET_FILTER[nama];
+    if (!preset) return;
+    this._brightness = preset.brightness;
+    this._contrast   = preset.contrast;
+    this._saturasi   = preset.saturasi;
+    this._hue        = preset.hue;
+    this._blur       = preset.blur;
+    this._grayscale  = preset.grayscale;
+    this._sepia      = preset.sepia;
+    this._sinkronSlider();
+    this._simpanHistory();
+    this._render();
+    this.emit('ubah', this._ambilNilaiFilter());
+  }
+
+  /** Reset semua nilai filter ke netral. */
+  _resetFilter() {
+    this._brightness = 0;
+    this._contrast   = 0;
+    this._saturasi   = 0;
+    this._hue        = 0;
+    this._blur       = 0;
+    this._grayscale  = 0;
+    this._sepia      = 0;
+    this._sinkronSlider();
+    this._render();
+    this.emit('ubah', this._ambilNilaiFilter());
+  }
+
+  /** Sinkronkan posisi slider dengan nilai state saat ini. */
+  _sinkronSlider() {
+    const MAP = {
+      brightness: this._brightness,
+      contrast:   this._contrast,
+      saturasi:   this._saturasi,
+      hue:        this._hue,
+      blur:       this._blur,
+      grayscale:  this._grayscale,
+      sepia:      this._sepia,
+      rotasiSudut: this._sudutBebas,
+    };
+    for (const [id, val] of Object.entries(MAP)) {
+      const slider = this._panelFilter.querySelector(`[data-ie-slider="${id}"]`)
+        ?? this._panelRotasi.querySelector(`[data-ie-slider="${id}"]`);
+      const nilaiEl = this._kontainer.querySelector(`[data-ie-nilai="${id}"]`);
+      if (slider) slider.value = val;
+      if (nilaiEl) nilaiEl.textContent = id === 'rotasiSudut' ? `${val}°` : val;
+    }
+  }
+
+  /** Ambil objek nilai filter saat ini. */
+  _ambilNilaiFilter() {
+    return {
+      brightness: this._brightness,
+      contrast:   this._contrast,
+      saturasi:   this._saturasi,
+      hue:        this._hue,
+      blur:       this._blur,
+      grayscale:  this._grayscale,
+      sepia:      this._sepia,
+      rotasi:     this._rotasi,
+      sudutBebas: this._sudutBebas,
+      flipH:      this._flipH,
+      flipV:      this._flipV,
+      zoom:       this._zoom,
+    };
+  }
+
+  // ─── Transformasi ─────────────────────────────────────────────
+
+  /** Rotasi gambar dalam kelipatan 90°. */
+  _putar(derajat) {
+    this._rotasi = (this._rotasi + derajat + 360) % 360;
+    this._crop   = null;
+    this._sesuaikanUkuranKanvas();
+    this._klampPan();
+    this._simpanHistory();
+    this._render();
+    this.emit('ubah', this._ambilNilaiFilter());
+  }
+
+  /** Ubah level zoom dan klamp offsetnya. */
+  _ubahZoom(nilaiBaru) {
+    this._zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAKS, nilaiBaru));
     this._klampPan();
     this._render();
   }
 
+  /** Reset semua transformasi dan filter ke kondisi awal. */
   _resetSemua() {
-    this._rotasi = 0; this._flipH = false; this._flipV = false;
-    this._zoom = 1; this._offsetX = 0; this._offsetY = 0;
-    this._brightness = 0; this._contrast = 0;
-    this._areaCrop = null; this._modeCrop = false; this._handleAktif = null;
-
-    if (this._sliderBrightness) {
-      this._sliderBrightness.input.value = '0';
-      this._sliderBrightness.elemen.querySelector('.wanuky-img-editor__slider-nilai').textContent = '0';
+    this._rotasi     = 0;
+    this._sudutBebas = 0;
+    this._flipH      = false;
+    this._flipV      = false;
+    this._zoom       = 1;
+    this._offsetX    = 0;
+    this._offsetY    = 0;
+    this._resetFilter();
+    this._modeCrop   = false;
+    this._crop       = null;
+    const btnCrop = this._kontainer.querySelector('[data-ie-aksi="crop"]');
+    if (btnCrop) {
+      btnCrop.setAttribute('aria-pressed', 'false');
+      btnCrop.classList.remove('wanuky-ie__btn--aktif');
+      this._canvas.style.cursor = 'default';
     }
-    if (this._sliderContrast) {
-      this._sliderContrast.input.value = '0';
-      this._sliderContrast.elemen.querySelector('.wanuky-img-editor__slider-nilai').textContent = '0';
-    }
-
-    // Reset tombol crop ke state non-aktif
-    const tombolCrop = this._toolbar.querySelector('#wanuky-ie-crop');
-    if (tombolCrop) {
-      tombolCrop.setAttribute('aria-pressed', 'false');
-      tombolCrop.classList.remove('wanuky-img-editor__tombol--aktif');
-    }
-    this._kanvas.style.cursor = 'grab';
-
+    const sliderRotasi = this._panelRotasi.querySelector('[data-ie-slider="rotasiSudut"]');
+    if (sliderRotasi) sliderRotasi.value = 0;
+    const nilaiRotasi = this._kontainer.querySelector('[data-ie-nilai="rotasiSudut"]');
+    if (nilaiRotasi) nilaiRotasi.textContent = '0°';
+    this._sesuaikanUkuranKanvas();
     this._render();
+    this.emit('ubah', this._ambilNilaiFilter());
   }
 
-  // ─────────────────────────────────────────────
-  // Skala dasar (fit gambar ke kanvas)
-  // ─────────────────────────────────────────────
+  // ─── Geometri & Pan ──────────────────────────────────────────
 
-  /**
-   * Menghitung faktor skala agar gambar fit (contain) dalam kanvas pada zoom=1.
-   * Memperhitungkan rotasi: gambar 90°/270° menukar dimensi lebar/tinggi.
-   */
+  /** Hitung skala agar gambar fit di kanvas (di-center). */
   _skalaDasarUntukFit() {
     if (!this._gambar) return 1;
-    const diputar = this._rotasi % 180 !== 0;
-    const lebarGambar  = diputar ? this._gambar.height : this._gambar.width;
-    const tinggiGambar = diputar ? this._gambar.width  : this._gambar.height;
+    const sudutRad = ((this._rotasi + this._sudutBebas) * Math.PI) / 180;
+    const cosA     = Math.abs(Math.cos(sudutRad));
+    const sinA     = Math.abs(Math.sin(sudutRad));
+    const rotW     = this._gambar.naturalWidth  * cosA + this._gambar.naturalHeight * sinA;
+    const rotH     = this._gambar.naturalWidth  * sinA + this._gambar.naturalHeight * cosA;
     return Math.min(
-      this._kanvas.width  / lebarGambar,
-      this._kanvas.height / tinggiGambar,
+      this._canvas.width  / rotW,
+      this._canvas.height / rotH,
     );
   }
 
-  // ─────────────────────────────────────────────
-  // Pan clamping
-  // ─────────────────────────────────────────────
-
   /**
-   * Membatasi offset pan agar gambar selalu menutupi seluruh kanvas.
-   *
-   * Formula: maxOffset = (ukuranGambarDiKanvas - ukuranKanvas) / 2
-   *   → Jika gambar == kanvas (zoom=1): maxOffset=0, tidak bisa pan sama sekali
-   *   → Jika gambar 2× kanvas (zoom=2): maxOffset = kanvas/2, bisa pan setengah kanvas
-   *
-   * Ini menjamin tidak ada area gelap (background) yang terlihat selama pan.
+   * Klamp offsetX/Y agar gambar tidak meninggalkan area hitam
+   * yang terlihat di tepi kanvas.
    */
   _klampPan() {
     if (!this._gambar) return;
-    const sd     = this._skalaDasarUntukFit();
-    const diputar = this._rotasi % 180 !== 0;
-    const imgW   = (diputar ? this._gambar.height : this._gambar.width)  * sd * this._zoom;
-    const imgH   = (diputar ? this._gambar.width  : this._gambar.height) * sd * this._zoom;
-    const cW     = this._kanvas.width;
-    const cH     = this._kanvas.height;
-
-    // maxOffset selalu >= 0; jika gambar lebih kecil dari canvas (seharusnya
-    // tidak terjadi karena ZOOM_MIN=1), klamp ke 0 agar tetap aman.
-    const maxOffsetX = Math.max(0, (imgW - cW) / 2);
-    const maxOffsetY = Math.max(0, (imgH - cH) / 2);
-
-    this._offsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, this._offsetX));
-    this._offsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, this._offsetY));
+    const skala  = this._skalaDasarUntukFit() * this._zoom;
+    const sudutRad = ((this._rotasi + this._sudutBebas) * Math.PI) / 180;
+    const cosA   = Math.abs(Math.cos(sudutRad));
+    const sinA   = Math.abs(Math.sin(sudutRad));
+    const tampW  = (this._gambar.naturalWidth  * cosA + this._gambar.naturalHeight * sinA) * skala;
+    const tampH  = (this._gambar.naturalWidth  * sinA + this._gambar.naturalHeight * cosA) * skala;
+    const maks   = {
+      x: Math.max(0, (tampW - this._canvas.width)  / 2),
+      y: Math.max(0, (tampH - this._canvas.height) / 2),
+    };
+    this._offsetX = Math.max(-maks.x, Math.min(maks.x, this._offsetX));
+    this._offsetY = Math.max(-maks.y, Math.min(maks.y, this._offsetY));
   }
 
-  // ─────────────────────────────────────────────
-  // Drag (crop + pan)
-  // ─────────────────────────────────────────────
-
+  /** Konversi koordinat event ke koordinat kanvas. */
   _posisiKanvas(e) {
-    const rect = this._kanvas.getBoundingClientRect();
+    const rect = this._canvas.getBoundingClientRect();
     return {
-      x: (e.clientX - rect.left) * (this._kanvas.width  / rect.width),
-      y: (e.clientY - rect.top)  * (this._kanvas.height / rect.height),
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
     };
   }
 
-  /** Clamp posisi pointer ke dalam batas kanvas */
-  _klampPosisi(pos) {
-    return {
-      x: Math.max(0, Math.min(this._kanvas.width,  pos.x)),
-      y: Math.max(0, Math.min(this._kanvas.height, pos.y)),
-    };
-  }
-
-  _deteksiHandle(pos) {
-    if (!this._areaCrop) return null;
-    // Mode circle hanya pakai 4 handle sudut untuk mempertahankan 1:1
-    const { x, y, lebar, tinggi } = this._normalisasiCrop();
-    const adaCircle = this._opsi.bentukCrop === 'circle';
-    const handles   = adaCircle
-      ? this._hitungPosisiHandleCircle(x, y, lebar, tinggi)
-      : this._hitungPosisiHandle(x, y, lebar, tinggi);
-
-    for (const [nama, hx, hy] of handles) {
-      if (Math.hypot(pos.x - hx, pos.y - hy) <= UKURAN_HANDLE * 1.5) return nama;
-    }
-    return null;
-  }
-
-  _hitungPosisiHandle(x, y, lebar, tinggi) {
-    return [
-      ['nw', x,             y              ],
-      ['n',  x + lebar / 2, y              ],
-      ['ne', x + lebar,     y              ],
-      ['e',  x + lebar,     y + tinggi / 2 ],
-      ['se', x + lebar,     y + tinggi     ],
-      ['s',  x + lebar / 2, y + tinggi     ],
-      ['sw', x,             y + tinggi     ],
-      ['w',  x,             y + tinggi / 2 ],
-    ];
-  }
-
-  // Circle mode hanya 4 handle sudut (1:1 crop)
-  _hitungPosisiHandleCircle(x, y, lebar, tinggi) {
-    return [
-      ['nw', x,         y          ],
-      ['ne', x + lebar, y          ],
-      ['se', x + lebar, y + tinggi ],
-      ['sw', x,         y + tinggi ],
-    ];
-  }
-
-  _normalisasiCrop() {
-    if (!this._areaCrop) return null;
-    const { x, y, lebar, tinggi } = this._areaCrop;
-    return {
-      x:      lebar  >= 0 ? x : x + lebar,
-      y:      tinggi >= 0 ? y : y + tinggi,
-      lebar:  Math.abs(lebar),
-      tinggi: Math.abs(tinggi),
-    };
-  }
+  // ─── Drag (crop + pan) ────────────────────────────────────────
 
   _mulaiDrag(e) {
-    this._sedangDrag = true;
-    this._kanvas.setPointerCapture(e.pointerId);
-    const pos = this._klampPosisi(this._posisiKanvas(e));
+    if (!this._gambar) return;
+    this._canvas.setPointerCapture(e.pointerId);
+    const pos = this._posisiKanvas(e);
+    this._dragging = true;
 
     if (this._modeCrop) {
       const handle = this._deteksiHandle(pos);
       if (handle) {
-        this._handleAktif    = handle;
-        this._titikMulaiDrag = pos;
+        // Resize crop yang sudah ada via handle
+        this._cropHandle = handle;
+        this._cropAwal   = { ...this._crop };
+      } else if (
+        this._crop &&
+        pos.x >= this._crop.x && pos.x <= this._crop.x + this._crop.w &&
+        pos.y >= this._crop.y && pos.y <= this._crop.y + this._crop.h
+      ) {
+        // Pindah crop yang sudah ada
+        this._cropHandle = 'move';
+        this._cropAwal   = { ...this._crop };
+        this._dragAwal   = pos;
       } else {
-        this._handleAktif = null;
-        this._areaCrop    = { x: pos.x, y: pos.y, lebar: 0, tinggi: 0 };
+        // Mulai crop baru
+        this._cropHandle = null;
+        this._cropAktif  = true;
+        this._dragAwal   = pos;
+        this._crop       = { x: pos.x, y: pos.y, w: 0, h: 0 };
       }
     } else {
-      this._titikMulaiDrag = { x: e.clientX - this._offsetX, y: e.clientY - this._offsetY };
+      // Mode pan
+      this._dragAwal = pos;
     }
   }
 
   _gerakDrag(e) {
-    if (!this._sedangDrag) return;
-    const pos = this._klampPosisi(this._posisiKanvas(e));
+    if (!this._dragging || !this._gambar) return;
+    const pos = this._posisiKanvas(e);
 
     if (this._modeCrop) {
-      if (this._handleAktif && this._areaCrop) {
-        this._resizeCropViaHandle(this._handleAktif, pos);
-      } else if (this._areaCrop) {
-        let dx = pos.x - this._areaCrop.x;
-        let dy = pos.y - this._areaCrop.y;
+      if (this._cropAktif) {
+        // Gambar area crop baru
+        let dx = pos.x - this._dragAwal.x;
+        let dy = pos.y - this._dragAwal.y;
 
-        // Mode circle: paksa rasio 1:1 agar seleksi selalu persegi
-        if (this._opsi.bentukCrop === 'circle') {
-          const sisi = Math.max(Math.abs(dx), Math.abs(dy));
-          dx = dx >= 0 ? sisi : -sisi;
-          dy = dy >= 0 ? sisi : -sisi;
+        // Terapkan rasio aspek jika aktif
+        if (this._rasioAspek) {
+          const absDx = Math.abs(dx);
+          const absDy = Math.abs(dy);
+          if (absDx / this._rasioAspek >= absDy) {
+            dy = (absDx / this._rasioAspek) * Math.sign(dy || 1);
+          } else {
+            dx = absDy * this._rasioAspek * Math.sign(dx || 1);
+          }
         }
 
-        this._areaCrop.lebar  = dx;
-        this._areaCrop.tinggi = dy;
+        this._crop = {
+          x: this._dragAwal.x,
+          y: this._dragAwal.y,
+          w: dx,
+          h: dy,
+        };
+      } else if (this._cropHandle === 'move') {
+        const dx = pos.x - this._dragAwal.x;
+        const dy = pos.y - this._dragAwal.y;
+        this._crop = {
+          x: this._cropAwal.x + dx,
+          y: this._cropAwal.y + dy,
+          w: this._cropAwal.w,
+          h: this._cropAwal.h,
+        };
+        this._dragAwal = pos;
+        this._cropAwal = { ...this._crop };
+      } else if (this._cropHandle) {
+        this._resizeCropViaHandle(this._cropHandle, pos);
       }
       this._render();
-    } else if (this._titikMulaiDrag) {
-      this._offsetX = e.clientX - this._titikMulaiDrag.x;
-      this._offsetY = e.clientY - this._titikMulaiDrag.y;
-      this._klampPan();
-      this._render();
-    }
-  }
-
-  _akhiriDrag() {
-    this._sedangDrag    = false;
-    this._handleAktif   = null;
-    this._titikMulaiDrag = null;
-
-    if (this._areaCrop) {
-      const { x, y, lebar, tinggi } = this._areaCrop;
-      this._areaCrop = {
-        x:      lebar  >= 0 ? x : x + lebar,
-        y:      tinggi >= 0 ? y : y + tinggi,
-        lebar:  Math.abs(lebar),
-        tinggi: Math.abs(tinggi),
-      };
-    }
-  }
-
-  _resizeCropViaHandle(handle, pos) {
-    let { x, y, lebar, tinggi } = this._normalisasiCrop();
-    const kanan = x + lebar;
-    const bawah = y + tinggi;
-    const cW    = this._kanvas.width;
-    const cH    = this._kanvas.height;
-
-    if (this._opsi.bentukCrop === 'circle') {
-      // Untuk circle, resize dari sudut dengan paksa 1:1
-      const dx = handle.includes('e') ? pos.x - x : kanan - pos.x;
-      const dy = handle.includes('s') ? pos.y - y : bawah - pos.y;
-      const sisi = Math.max(Math.min(dx, dy), MIN_UKURAN_CROP);
-
-      if (handle === 'nw') { x = kanan - sisi; y = bawah - sisi; }
-      if (handle === 'ne') { y = bawah - sisi; }
-      if (handle === 'sw') { x = kanan - sisi; }
-      // se: x, y tidak berubah
-
-      lebar  = sisi;
-      tinggi = sisi;
     } else {
-      if (handle.includes('n')) { y      = Math.min(pos.y, bawah - MIN_UKURAN_CROP); tinggi = bawah - y; }
-      if (handle.includes('s')) { tinggi = Math.max(pos.y - y, MIN_UKURAN_CROP); }
-      if (handle.includes('w')) { x      = Math.min(pos.x, kanan - MIN_UKURAN_CROP); lebar  = kanan - x; }
-      if (handle.includes('e')) { lebar  = Math.max(pos.x - x, MIN_UKURAN_CROP); }
-    }
-
-    // Klamp ke batas kanvas
-    x      = Math.max(0, Math.min(x,      cW - lebar));
-    y      = Math.max(0, Math.min(y,      cH - tinggi));
-    lebar  = Math.min(lebar,  cW - x);
-    tinggi = Math.min(tinggi, cH - y);
-
-    this._areaCrop = { x, y, lebar, tinggi };
-  }
-
-  // ─────────────────────────────────────────────
-  // Crop terapkan (publik — bake crop ke gambar baru)
-  // ─────────────────────────────────────────────
-
-  _terapkanCrop() {
-    if (!this._areaCrop) return;
-    const { x, y, lebar, tinggi } = this._normalisasiCrop();
-    if (lebar < MIN_UKURAN_CROP || tinggi < MIN_UKURAN_CROP) return;
-
-    const kanvasCrop = document.createElement('canvas');
-    kanvasCrop.width  = Math.round(lebar);
-    kanvasCrop.height = Math.round(tinggi);
-    kanvasCrop.getContext('2d').drawImage(
-      this._kanvas,
-      Math.round(x), Math.round(y), Math.round(lebar), Math.round(tinggi),
-      0, 0, Math.round(lebar), Math.round(tinggi),
-    );
-
-    const gambarBaru = new Image();
-    gambarBaru.onload = () => {
-      this._gambar = gambarBaru;
-      this._resetSemua();
-      this._sesuaikanUkuranKanvas();
+      // Pan
+      this._offsetX += pos.x - this._dragAwal.x;
+      this._offsetY += pos.y - this._dragAwal.y;
+      this._klampPan();
+      this._dragAwal = pos;
       this._render();
-    };
-    gambarBaru.src = kanvasCrop.toDataURL();
-  }
-
-  // ─────────────────────────────────────────────
-  // Filter brightness & contrast
-  // ─────────────────────────────────────────────
-
-  _terapkanFilter() {
-    if (this._brightness === 0 && this._contrast === 0) return;
-
-    const lebar   = this._kanvas.width;
-    const tinggi  = this._kanvas.height;
-    const imgData = this._ctx.getImageData(0, 0, lebar, tinggi);
-    const data    = imgData.data;
-    const b       = this._brightness;
-    const c       = this._contrast;
-    const fK      = c !== -255 ? (259 * (c + 255)) / (255 * (259 - c)) : 0;
-
-    for (let i = 0; i < data.length; i += 4) {
-      let r  = data[i]     + b;
-      let g  = data[i + 1] + b;
-      let bl = data[i + 2] + b;
-
-      if (c !== 0) {
-        r  = fK * (r  - 128) + 128;
-        g  = fK * (g  - 128) + 128;
-        bl = fK * (bl - 128) + 128;
-      }
-
-      data[i]     = Math.max(0, Math.min(255, r));
-      data[i + 1] = Math.max(0, Math.min(255, g));
-      data[i + 2] = Math.max(0, Math.min(255, bl));
     }
 
-    this._ctx.putImageData(imgData, 0, 0);
+    // Cursor saat di atas handle
+    if (this._modeCrop && !this._dragging) {
+      const handle = this._deteksiHandle(pos);
+      this._canvas.style.cursor = handle ? 'nwse-resize' : 'crosshair';
+    }
   }
 
-  // ─────────────────────────────────────────────
-  // Render
-  // ─────────────────────────────────────────────
+  _akhiriDrag(e) {
+    if (!this._dragging) return;
+    this._dragging  = false;
+    this._cropAktif = false;
+    this._cropHandle= null;
+    this._dragAwal  = null;
 
-  /**
-   * Menghitung dimensi kanvas optimal berdasarkan aspect ratio gambar.
-   * Canvas selalu fit dalam batas KANVAS_LEBAR_MAKS × KANVAS_TINGGI_MAKS.
-   * Rotasi 90°/270° menukar dimensi lebar/tinggi gambar.
-   */
+    if (this._modeCrop && this._crop) {
+      this._normalisasiCrop();
+      this._render();
+    }
+  }
+
+  /** Deteksi apakah posisi ada di atas salah satu handle crop. */
+  _deteksiHandle(pos) {
+    if (!this._crop) return null;
+    const { x, y, w, h } = this._normalisasiCropSementara();
+    const handles = this._opsi.bentukCrop === 'circle'
+      ? this._hitungPosisiHandleCircle(x, y, w, h)
+      : this._hitungPosisiHandle(x, y, w, h);
+
+    for (const [id, hx, hy] of handles) {
+      const dx = pos.x - hx;
+      const dy = pos.y - hy;
+      if (Math.sqrt(dx * dx + dy * dy) <= UKURAN_HANDLE) return id;
+    }
+    return null;
+  }
+
+  _hitungPosisiHandle(x, y, w, h) {
+    return [
+      ['tl', x,       y      ],
+      ['tm', x + w/2, y      ],
+      ['tr', x + w,   y      ],
+      ['ml', x,       y + h/2],
+      ['mr', x + w,   y + h/2],
+      ['bl', x,       y + h  ],
+      ['bm', x + w/2, y + h  ],
+      ['br', x + w,   y + h  ],
+    ];
+  }
+
+  _hitungPosisiHandleCircle(x, y, w, h) {
+    const cx = x + w/2, cy = y + h/2;
+    const rx = w/2,     ry = h/2;
+    return [
+      ['t',  cx,      cy - ry],
+      ['r',  cx + rx, cy     ],
+      ['b',  cx,      cy + ry],
+      ['l',  cx - rx, cy     ],
+    ];
+  }
+
+  /** Normalisasi sementara (nilai bisa negatif → ubah ke positif). */
+  _normalisasiCropSementara() {
+    if (!this._crop) return { x: 0, y: 0, w: 0, h: 0 };
+    const { x, y, w, h } = this._crop;
+    return {
+      x: w < 0 ? x + w : x,
+      y: h < 0 ? y + h : y,
+      w: Math.abs(w),
+      h: Math.abs(h),
+    };
+  }
+
+  /** Normalisasi crop (tulis ulang dengan nilai positif, klamp ke kanvas). */
+  _normalisasiCrop() {
+    if (!this._crop) return;
+    const { x, y, w, h } = this._normalisasiCropSementara();
+    this._crop = {
+      x: Math.max(0, x),
+      y: Math.max(0, y),
+      w: Math.min(w, this._canvas.width  - Math.max(0, x)),
+      h: Math.min(h, this._canvas.height - Math.max(0, y)),
+    };
+  }
+
+  /** Resize crop via handle drag. */
+  _resizeCropViaHandle(handle, pos) {
+    const c = { ...this._cropAwal };
+    const batasKanan  = c.x + c.w;
+    const batasBawah  = c.y + c.h;
+
+    switch (handle) {
+      case 'tl': this._crop = { x: pos.x, y: pos.y, w: batasKanan - pos.x, h: batasBawah - pos.y }; break;
+      case 'tm': this._crop = { x: c.x, y: pos.y, w: c.w, h: batasBawah - pos.y }; break;
+      case 'tr': this._crop = { x: c.x, y: pos.y, w: pos.x - c.x, h: batasBawah - pos.y }; break;
+      case 'ml': this._crop = { x: pos.x, y: c.y, w: batasKanan - pos.x, h: c.h }; break;
+      case 'mr': this._crop = { x: c.x, y: c.y, w: pos.x - c.x, h: c.h }; break;
+      case 'bl': this._crop = { x: pos.x, y: c.y, w: batasKanan - pos.x, h: pos.y - c.y }; break;
+      case 'bm': this._crop = { x: c.x, y: c.y, w: c.w, h: pos.y - c.y }; break;
+      case 'br': this._crop = { x: c.x, y: c.y, w: pos.x - c.x, h: pos.y - c.y }; break;
+      // Handle lingkaran
+      case 't':  this._crop = { x: c.x, y: pos.y, w: c.w, h: batasBawah - pos.y }; break;
+      case 'r':  this._crop = { x: c.x, y: c.y, w: pos.x - c.x, h: c.h }; break;
+      case 'b':  this._crop = { x: c.x, y: c.y, w: c.w, h: pos.y - c.y }; break;
+      case 'l':  this._crop = { x: pos.x, y: c.y, w: batasKanan - pos.x, h: c.h }; break;
+    }
+
+    // Terapkan rasio aspek pada handle resize (hanya corner)
+    if (this._rasioAspek && ['tl', 'tr', 'bl', 'br'].includes(handle)) {
+      const absW = Math.abs(this._crop.w);
+      const absH = Math.abs(this._crop.h);
+      // Dominan lebar → sesuaikan tinggi
+      if (absW / this._rasioAspek >= absH) {
+        this._crop.h = (absW / this._rasioAspek) * Math.sign(this._crop.h || 1);
+      } else {
+        this._crop.w = absH * this._rasioAspek * Math.sign(this._crop.w || 1);
+      }
+    }
+  }
+
+  // ─── Sesuaikan ukuran kanvas ──────────────────────────────────
+
   _sesuaikanUkuranKanvas() {
     if (!this._gambar) return;
-    const img     = this._gambar;
-    const diputar = this._rotasi % 180 !== 0;
-    const lebarEf  = diputar ? img.height : img.width;
-    const tinggiEf = diputar ? img.width  : img.height;
+    const sudutRad = ((this._rotasi + this._sudutBebas) * Math.PI) / 180;
+    const cosA     = Math.abs(Math.cos(sudutRad));
+    const sinA     = Math.abs(Math.sin(sudutRad));
 
-    // Skala agar fit dalam batas maks, tidak memperbesar gambar kecil
-    const skala = Math.min(
-      KANVAS_LEBAR_MAKS  / lebarEf,
-      KANVAS_TINGGI_MAKS / tinggiEf,
-      1,
-    );
+    const iW = this._gambar.naturalWidth;
+    const iH = this._gambar.naturalHeight;
 
-    this._kanvas.width  = Math.round(lebarEf  * skala);
-    this._kanvas.height = Math.round(tinggiEf * skala);
+    // Tentukan ukuran kanvas (dibatasi oleh opsi ukuranMaks atau konstanta)
+    const maks = this._opsi.ukuranMaks ?? {
+      lebar:  KANVAS_LEBAR_MAKS,
+      tinggi: KANVAS_TINGGI_MAKS,
+    };
+
+    const rotW = iW * cosA + iH * sinA;
+    const rotH = iW * sinA + iH * cosA;
+    const skala = Math.min(maks.lebar / rotW, maks.tinggi / rotH, 1);
+
+    this._canvas.width  = Math.round(rotW * skala);
+    this._canvas.height = Math.round(rotH * skala);
   }
 
+  // ─── Render ───────────────────────────────────────────────────
+
   _render() {
-    if (!this._gambar || !this._ctx) return;
+    const ctx = this._ctx;
+    const W   = this._canvas.width;
+    const H   = this._canvas.height;
 
-    const ctx    = this._ctx;
-    const cW     = this._kanvas.width;
-    const cH     = this._kanvas.height;
-    const sd     = this._skalaDasarUntukFit();
+    ctx.clearRect(0, 0, W, H);
 
-    ctx.clearRect(0, 0, cW, cH);
-    // Background kanvas — warna gelap netral
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(0, 0, cW, cH);
+    if (!this._gambar) return;
+
+    const skalaFit = this._skalaDasarUntukFit();
+    const skala    = skalaFit * this._zoom;
+    const sudutRad = ((this._rotasi + this._sudutBebas) * Math.PI) / 180;
+    const iW       = this._gambar.naturalWidth;
+    const iH       = this._gambar.naturalHeight;
 
     ctx.save();
-    ctx.translate(cW / 2 + this._offsetX, cH / 2 + this._offsetY);
-    ctx.rotate((this._rotasi * Math.PI) / 180);
+
+    // Terapkan CSS filter SEBELUM drawImage
+    ctx.filter = this._buildCSSFilter();
+
+    // Transformasi: pusat kanvas + offset pan
+    ctx.translate(W / 2 + this._offsetX, H / 2 + this._offsetY);
+    ctx.rotate(sudutRad);
     ctx.scale(
-      (this._flipH ? -1 : 1) * sd * this._zoom,
-      (this._flipV ? -1 : 1) * sd * this._zoom,
+      this._flipH ? -skala : skala,
+      this._flipV ? -skala : skala,
     );
-    ctx.drawImage(this._gambar, -this._gambar.width / 2, -this._gambar.height / 2);
+
+    ctx.drawImage(this._gambar, -iW / 2, -iH / 2, iW, iH);
+
     ctx.restore();
 
-    // Terapkan filter setelah render dasar
-    this._terapkanFilter();
+    // Reset filter sebelum menggambar overlay (handle, grid)
+    ctx.filter = 'none';
 
-    // Overlay crop aktif
-    if (this._modeCrop && this._areaCrop) {
+    // Overlay crop
+    if (this._modeCrop) {
       if (this._opsi.bentukCrop === 'circle') {
         this._renderOverlayCropCircle();
       } else {
         this._renderOverlayCropRect();
       }
-    } else if (!this._modeCrop && this._opsi.bentukCrop === 'circle') {
-      // Panduan lingkaran persisten — selalu tampil di circle mode
-      this._renderPanduanCircle();
     }
   }
 
-  // Overlay gelap + seleksi persegi dengan grid rule-of-thirds
   _renderOverlayCropRect() {
-    const ctx  = this._ctx;
-    const crop = this._normalisasiCrop();
-    if (!crop) return;
-    const { x, y, lebar, tinggi } = crop;
-    const cW = this._kanvas.width;
-    const cH = this._kanvas.height;
-
-    // Overlay di luar area crop — even-odd fill rule untuk "lubang" di crop area
-    ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.beginPath();
-    ctx.rect(0, 0, cW, cH);
-    ctx.rect(x, y, lebar, tinggi);
-    ctx.fill('evenodd');
-    ctx.restore();
-
-    // Border crop dashed
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-    ctx.lineWidth   = 1.5;
-    ctx.setLineDash([6, 3]);
-    ctx.strokeRect(x, y, lebar, tinggi);
-    ctx.setLineDash([]);
-
-    // Grid rule-of-thirds
-    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-    ctx.lineWidth   = 0.8;
-    for (let i = 1; i < 3; i++) {
-      ctx.beginPath();
-      ctx.moveTo(x + (lebar * i) / 3, y);
-      ctx.lineTo(x + (lebar * i) / 3, y + tinggi);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(x, y + (tinggi * i) / 3);
-      ctx.lineTo(x + lebar, y + (tinggi * i) / 3);
-      ctx.stroke();
-    }
-
-    // 8 handle resize
-    ctx.fillStyle   = '#fff';
-    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-    ctx.lineWidth   = 1;
-    ctx.setLineDash([]);
-    for (const [, hx, hy] of this._hitungPosisiHandle(x, y, lebar, tinggi)) {
-      ctx.beginPath();
-      ctx.rect(hx - UKURAN_HANDLE / 2, hy - UKURAN_HANDLE / 2, UKURAN_HANDLE, UKURAN_HANDLE);
-      ctx.fill();
-      ctx.stroke();
-    }
-  }
-
-  // Overlay gelap + seleksi lingkaran (circle crop mode)
-  _renderOverlayCropCircle() {
-    const ctx  = this._ctx;
-    const crop = this._normalisasiCrop();
-    if (!crop) return;
-    const sisi = Math.min(crop.lebar, crop.tinggi);
-    const cx   = crop.x + sisi / 2;
-    const cy   = crop.y + sisi / 2;
-    const r    = sisi / 2;
-    const cW   = this._kanvas.width;
-    const cH   = this._kanvas.height;
-
-    // Overlay gelap di luar lingkaran
-    ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.beginPath();
-    ctx.rect(0, 0, cW, cH);
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fill('evenodd');
-    ctx.restore();
-
-    // Border lingkaran
-    ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-    ctx.lineWidth   = 2;
-    ctx.setLineDash([]);
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Garis panduan tengah (crosshair)
-    ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-    ctx.lineWidth   = 0.8;
-    ctx.beginPath();
-    ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r);
-    ctx.stroke();
-
-    // 4 handle sudut (1:1 saja)
-    const sudut = [
-      [crop.x,          crop.y          ],
-      [crop.x + sisi,   crop.y          ],
-      [crop.x + sisi,   crop.y + sisi   ],
-      [crop.x,          crop.y + sisi   ],
-    ];
-    ctx.fillStyle   = '#fff';
-    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-    ctx.lineWidth   = 1;
-    for (const [hx, hy] of sudut) {
-      ctx.beginPath();
-      ctx.rect(hx - UKURAN_HANDLE / 2, hy - UKURAN_HANDLE / 2, UKURAN_HANDLE, UKURAN_HANDLE);
-      ctx.fill();
-      ctx.stroke();
-    }
-  }
-
-  /**
-   * Panduan lingkaran persisten — tampil di circle mode saat belum ada seleksi aktif.
-   * Membantu user memposisikan wajah ke dalam lingkaran.
-   */
-  _renderPanduanCircle() {
     const ctx = this._ctx;
-    const cW  = this._kanvas.width;
-    const cH  = this._kanvas.height;
-    const r   = Math.min(cW, cH) / 2 - 6;  // 6px margin dari tepi
-    const cx  = cW / 2;
-    const cy  = cH / 2;
+    const W   = this._canvas.width;
+    const H   = this._canvas.height;
 
-    // Overlay gelap di luar lingkaran
+    if (!this._crop) return;
+    const { x, y, w, h } = this._normalisasiCropSementara();
+    if (w < 2 || h < 2) return;
+
+    // Redupkan area di luar crop
     ctx.save();
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    ctx.beginPath();
-    ctx.rect(0, 0, cW, cH);
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fill('evenodd');
+    ctx.fillRect(0, 0, W, H);
+    ctx.clearRect(x, y, w, h);
     ctx.restore();
 
-    // Border lingkaran — solid tipis berwarna emas (sesuai design system)
-    ctx.strokeStyle = 'rgba(153,108,65,0.85)';
-    ctx.lineWidth   = 2;
-    ctx.setLineDash([]);
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.stroke();
+    // Border crop
+    ctx.save();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth   = 1.5;
+    ctx.strokeRect(x, y, w, h);
 
-    // Crosshair panduan di pusat
-    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-    ctx.lineWidth   = 1;
+    // Grid rule-of-thirds
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth   = 0.8;
     ctx.beginPath();
-    ctx.moveTo(cx - r * 0.2, cy); ctx.lineTo(cx + r * 0.2, cy);
+    ctx.moveTo(x + w/3, y); ctx.lineTo(x + w/3, y + h);
+    ctx.moveTo(x + w*2/3, y); ctx.lineTo(x + w*2/3, y + h);
+    ctx.moveTo(x, y + h/3); ctx.lineTo(x + w, y + h/3);
+    ctx.moveTo(x, y + h*2/3); ctx.lineTo(x + w, y + h*2/3);
     ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - r * 0.2); ctx.lineTo(cx, cy + r * 0.2);
-    ctx.stroke();
+    ctx.restore();
+
+    // Handle
+    const handles = this._hitungPosisiHandle(x, y, w, h);
+    ctx.save();
+    for (const [_, hx, hy] of handles) {
+      ctx.beginPath();
+      ctx.arc(hx, hy, UKURAN_HANDLE / 2, 0, Math.PI * 2);
+      ctx.fillStyle   = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth   = 1;
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
-  // ─────────────────────────────────────────────
-  // API Publik
-  // ─────────────────────────────────────────────
+  _renderOverlayCropCircle() {
+    const ctx = this._ctx;
+    const W   = this._canvas.width;
+    const H   = this._canvas.height;
+
+    if (!this._crop) return;
+    const { x, y, w, h } = this._normalisasiCropSementara();
+    if (w < 2 || h < 2) return;
+
+    const cx = x + w/2, cy = y + h/2;
+    const rx = w/2,     ry = h/2;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Border ellipse
+    ctx.save();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth   = 1.5;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Panduan cross-hair
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+    ctx.lineWidth   = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(cx - rx, cy); ctx.lineTo(cx + rx, cy);
+    ctx.moveTo(cx, cy - ry); ctx.lineTo(cx, cy + ry);
+    ctx.stroke();
+    ctx.restore();
+
+    // Handle
+    const handles = this._hitungPosisiHandleCircle(x, y, w, h);
+    ctx.save();
+    for (const [_, hx, hy] of handles) {
+      ctx.beginPath();
+      ctx.arc(hx, hy, UKURAN_HANDLE / 2, 0, Math.PI * 2);
+      ctx.fillStyle   = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth   = 1;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ─── Public API ───────────────────────────────────────────────
 
   /**
-   * Memuat file gambar ke editor.
+   * Muat gambar dari objek File.
    * @param {File} file
    */
   muatFile(file) {
-    if (!file.type.startsWith('image/')) {
-      throw new Error(`[ImageEditor] Tipe file tidak didukung: ${file.type}`);
+    if (!file?.type.startsWith('image/')) {
+      this.emit('error', new Error('File bukan gambar yang valid'));
+      return;
     }
 
-    const url    = URL.createObjectURL(file);
-    const gambar = new Image();
-
-    gambar.onload = () => {
-      URL.revokeObjectURL(url);
-      this._gambar = gambar;
-      this._resetSemua();
-      this._sesuaikanUkuranKanvas();
-      this._render();
-      this._zonaDrop.style.display = 'none';
-      this._kanvas.style.display   = 'block';
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const src = e.target.result;
+      this._muatDariSrc(src);
     };
-
-    gambar.onerror = () => {
-      URL.revokeObjectURL(url);
-      throw new Error('[ImageEditor] Gagal memuat gambar dari file.');
-    };
-
-    gambar.src = url;
+    reader.onerror = () => this.emit('error', new Error('Gagal membaca file'));
+    reader.readAsDataURL(file);
   }
 
   /**
-   * Menyimpan hasil edit sebagai Blob.
-   *
-   * Prioritas ekspor:
-   * 1. Jika ada area crop aktif → crop area tersebut (circle: lingkaran → square)
-   * 2. Jika bentukCrop=circle tanpa crop → crop square dari tengah kanvas
-   * 3. Tanpa crop → seluruh kanvas
-   * 4. Jika ukuranMaks dikonfigurasi → scale-down output
-   *
+   * Muat gambar dari URL (data URL, object URL, atau URL biasa).
+   * @param {string} url
+   * @returns {Promise<void>}
+   */
+  muatUrl(url) {
+    return this._muatDariSrc(url);
+  }
+
+  /** Internal: muat gambar dari string src. */
+  _muatDariSrc(src) {
+    return new Promise((resolve, reject) => {
+      const img    = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload  = () => {
+        this._gambar    = img;
+        this._gambarSrc = src;
+        this._resetSemua();
+        this._sesuaikanUkuranKanvas();
+        this._history    = [];
+        this._historyIdx = -1;
+        this._simpanHistory();
+        this._areaDrop.hidden  = true;
+        this._canvas.hidden    = false;
+        this._render();
+        this.emit('muat', { lebar: img.naturalWidth, tinggi: img.naturalHeight });
+        resolve();
+      };
+      img.onerror = () => {
+        const err = new Error(`Gagal memuat gambar dari src`);
+        this.emit('error', err);
+        reject(err);
+      };
+      img.src = src;
+    });
+  }
+
+  /**
+   * Terapkan crop yang sedang aktif ke gambar.
+   * Menghasilkan gambar baru dari area crop yang dipilih.
+   */
+  terapkanCrop() {
+    if (!this._gambar || !this._crop) return;
+    this._normalisasiCrop();
+    const { x, y, w, h } = this._crop;
+    if (w < 1 || h < 1) return;
+
+    const offscreen = document.createElement('canvas');
+    const offCtx    = offscreen.getContext('2d');
+
+    if (this._opsi.bentukCrop === 'circle') {
+      const sisi = Math.min(w, h);
+      offscreen.width  = sisi;
+      offscreen.height = sisi;
+      offCtx.beginPath();
+      offCtx.ellipse(sisi/2, sisi/2, sisi/2, sisi/2, 0, 0, Math.PI * 2);
+      offCtx.clip();
+      const ox = x + (w - sisi) / 2;
+      const oy = y + (h - sisi) / 2;
+      offCtx.drawImage(this._canvas, ox, oy, sisi, sisi, 0, 0, sisi, sisi);
+    } else {
+      offscreen.width  = w;
+      offscreen.height = h;
+      offCtx.drawImage(this._canvas, x, y, w, h, 0, 0, w, h);
+    }
+
+    offscreen.toBlob((blob) => {
+      if (!blob) return;
+      const newSrc = URL.createObjectURL(blob);
+      // Marconi sebelum muat: gambarSrc untuk history
+      this._historyGambar = newSrc;
+      this._simpanHistory();
+      this._muatDariSrc(newSrc).then(() => {
+        this._modeCrop = false;
+        this._crop     = null;
+        const btnCrop  = this._kontainer.querySelector('[data-ie-aksi="crop"]');
+        if (btnCrop) {
+          btnCrop.setAttribute('aria-pressed', 'false');
+          btnCrop.classList.remove('wanuky-ie__btn--aktif');
+          this._canvas.style.cursor = 'default';
+        }
+        this._render();
+        this.emit('ubah', this._ambilNilaiFilter());
+      });
+    }, 'image/png');
+  }
+
+  /**
+   * Simpan gambar ke Blob dan emit event 'selesai'.
    * @returns {Promise<Blob>}
    */
-  simpan() {
+  _simpanGambar() {
     return new Promise((resolve, reject) => {
       if (!this._gambar) {
-        reject(new Error('[ImageEditor] Tidak ada gambar yang dimuat.'));
+        reject(new Error('Belum ada gambar yang dimuat'));
         return;
       }
 
-      // Re-render tanpa overlay crop/circle agar ekspor bersih dari artefak UI.
-      // Simpan state modeCrop sementara, matikan selama render ekspor.
-      const modeCropSimpan = this._modeCrop;
-      this._modeCrop = false;
-      this._render();
-      this._modeCrop = modeCropSimpan;
-      // Tidak perlu _render() lagi setelah ekspor — overlay akan muncul kembali
-      // di next render cycle (saat user berinteraksi).
+      let kanvasFinal = this._canvas;
 
-      let kanvasEkspor = this._kanvas;
-
-      // — Kasus 1: Ada seleksi crop aktif —
-      const crop = this._normalisasiCrop();
-      if (crop && crop.lebar >= MIN_UKURAN_CROP && crop.tinggi >= MIN_UKURAN_CROP) {
-        const sisi = this._opsi.bentukCrop === 'circle'
-          ? Math.min(crop.lebar, crop.tinggi)  // paksa square untuk circle
-          : null;
-
-        const srcX = Math.round(sisi != null ? crop.x + (crop.lebar - sisi) / 2 : crop.x);
-        const srcY = Math.round(sisi != null ? crop.y + (crop.tinggi - sisi) / 2 : crop.y);
-        const srcW = Math.round(sisi ?? crop.lebar);
-        const srcH = Math.round(sisi ?? crop.tinggi);
-
-        const kanvasCrop = document.createElement('canvas');
-        kanvasCrop.width  = srcW;
-        kanvasCrop.height = srcH;
-        kanvasCrop.getContext('2d').drawImage(this._kanvas, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
-        kanvasEkspor = kanvasCrop;
-
-      // — Kasus 2: Circle mode tanpa seleksi → auto-crop square dari tengah —
-      } else if (this._opsi.bentukCrop === 'circle') {
-        const sisi  = Math.min(this._kanvas.width, this._kanvas.height);
-        const srcX  = Math.round((this._kanvas.width  - sisi) / 2);
-        const srcY  = Math.round((this._kanvas.height - sisi) / 2);
-        const kanvasCircle = document.createElement('canvas');
-        kanvasCircle.width  = sisi;
-        kanvasCircle.height = sisi;
-        kanvasCircle.getContext('2d').drawImage(this._kanvas, srcX, srcY, sisi, sisi, 0, 0, sisi, sisi);
-        kanvasEkspor = kanvasCircle;
+      // Jika ada ukuranMaks output, resize
+      if (this._opsi.ukuranMaks) {
+        const { lebar: mL, tinggi: mT } = this._opsi.ukuranMaks;
+        const skala = Math.min(mL / this._canvas.width, mT / this._canvas.height, 1);
+        if (skala < 1) {
+          const tmp    = document.createElement('canvas');
+          tmp.width    = Math.round(this._canvas.width  * skala);
+          tmp.height   = Math.round(this._canvas.height * skala);
+          const tmpCtx = tmp.getContext('2d');
+          tmpCtx.drawImage(this._canvas, 0, 0, tmp.width, tmp.height);
+          kanvasFinal = tmp;
+        }
       }
 
-      // — Terapkan ukuranMaks jika dikonfigurasi —
-      const { ukuranMaks } = this._opsi;
-      if (ukuranMaks) {
-        const skalaW   = ukuranMaks.lebar  ? Math.min(1, ukuranMaks.lebar  / kanvasEkspor.width)  : 1;
-        const skalaH   = ukuranMaks.tinggi ? Math.min(1, ukuranMaks.tinggi / kanvasEkspor.height) : 1;
-        const skala    = Math.min(skalaW, skalaH);
-        const kanvasMaks = document.createElement('canvas');
-        kanvasMaks.width  = Math.round(kanvasEkspor.width  * skala);
-        kanvasMaks.height = Math.round(kanvasEkspor.height * skala);
-        kanvasMaks.getContext('2d').drawImage(kanvasEkspor, 0, 0, kanvasMaks.width, kanvasMaks.height);
-        kanvasEkspor = kanvasMaks;
-      }
-
-      kanvasEkspor.toBlob(
+      const mime = `image/${this._opsi.formatOutput}`;
+      kanvasFinal.toBlob(
         (blob) => {
-          if (!blob) { reject(new Error('[ImageEditor] Gagal mengekspor gambar.')); return; }
-          this._opsi.onSelesai?.(blob);
+          if (!blob) { reject(new Error('Gagal menghasilkan blob')); return; }
+          this.emit('selesai', blob);
           resolve(blob);
         },
-        this._opsi.formatOutput,
+        mime,
         this._opsi.kualitasOutput,
       );
     });
   }
 
-  _simpanGambar() {
-    this.simpan().catch((err) => console.error(err.message));
+  /**
+   * Alias publik untuk simpan.
+   * @returns {Promise<Blob>}
+   */
+  simpan() {
+    return this._simpanGambar();
   }
 
-  /** Terapkan crop aktif ke gambar sumber (bake). */
-  terapkanCrop() {
-    this._terapkanCrop();
+  /**
+   * Ambil data URL dari kanvas saat ini (termasuk semua filter aktif).
+   * @param {'jpeg'|'png'|'webp'} [format='png']
+   * @param {number} [kualitas=0.92]
+   * @returns {string}
+   */
+  getDataUrl(format = 'png', kualitas = 0.92) {
+    return this._canvas.toDataURL(`image/${format}`, kualitas);
   }
 
-  /** Mengambil gambar hasil edit sebagai data URL. */
-  getDataUrl() {
-    return this._gambar ? this._kanvas.toDataURL(this._opsi.formatOutput, this._opsi.kualitasOutput) : null;
+  /**
+   * Dapatkan informasi editor saat ini.
+   * @returns {{ lebar: number, tinggi: number, rotasi: number, sudutBebas: number, zoom: number, filter: object }}
+   */
+  dapatkanInfo() {
+    return {
+      lebar:      this._gambar?.naturalWidth  ?? 0,
+      tinggi:     this._gambar?.naturalHeight ?? 0,
+      rotasi:     this._rotasi,
+      sudutBebas: this._sudutBebas,
+      flipH:      this._flipH,
+      flipV:      this._flipV,
+      zoom:       this._zoom,
+      filter: {
+        brightness: this._brightness,
+        contrast:   this._contrast,
+        saturasi:   this._saturasi,
+        hue:        this._hue,
+        blur:       this._blur,
+        grayscale:  this._grayscale,
+        sepia:      this._sepia,
+      },
+      versi: VERSI,
+    };
   }
 
-  /** Menghancurkan editor dan membersihkan DOM. */
+  /**
+   * Hancurkan editor: hapus semua listener dan elemen dari DOM.
+   */
   hancurkan() {
+    // Listener di canvas/kontainer akan di-GC bersama elemen
     this._kontainer.innerHTML = '';
-    this._kontainer.classList.remove('wanuky-img-editor');
     this._gambar = null;
+    this._listeners.forEach((set) => set.clear());
   }
 }

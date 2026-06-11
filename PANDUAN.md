@@ -1,24 +1,31 @@
-# Panduan wanuky-lib v1.1.0
+# Panduan wanuky-lib v2.0.0
 
 Library internal untuk proyek website pribadi. Terdiri dari dua package:
 
-- **`@wanuky/template-engine`** — SSR template engine untuk Node.js (server-side)
-- **`@wanuky/web-editor`** — Rich text editor dan image editor untuk browser (client-side)
+- **`@wanuky10/template-engine`** — SSR template engine untuk Node.js (server-side)
+- **`@wanuky10/web-editor`** — RichTextEditor dan ImageEditor untuk browser (client-side)
 
 ---
 
 ## Daftar Isi
 
 1. [Instalasi](#instalasi)
-2. [Template Engine](#template-engine)
+2. [Template Engine v2.0.0](#template-engine)
    - [Setup](#setup-template-engine)
    - [Interpolasi](#interpolasi)
+   - [Filter](#filter)
    - [Include Partial](#include-partial)
    - [Layout & Slot](#layout--slot)
+   - [Named Slots](#named-slots)
    - [Loop `<each>`](#loop-each)
-   - [Kondisional `<if>`](#kondisional-if)
-   - [File Cache](#file-cache)
-3. [WebEditor](#webeditor)
+   - [Kondisional `<if>` / `<unless>`](#kondisional-if--unless)
+   - [`<switch>`](#switch)
+   - [`<with>`](#with)
+   - [`<set>`](#set)
+   - [Macro `<macro>` / `<call>`](#macro--call)
+   - [Blok `<raw>`](#blok-raw)
+   - [Cache & Hot Reload](#cache--hot-reload)
+3. [WebEditor v2.0.0](#webeditor)
    - [RichTextEditor](#richtexteditor)
    - [ImageEditor](#imageeditor)
 4. [Integrasi ke Proyek](#integrasi-ke-proyek)
@@ -28,77 +35,46 @@ Library internal untuk proyek website pribadi. Terdiri dari dua package:
 
 ## Instalasi
 
-### Cara 1 — GitHub Packages (disarankan)
-
-Pastikan `.npmrc` sudah dikonfigurasi untuk scope `@wanuky10`:
+Pastikan `.npmrc` di root proyek sudah dikonfigurasi:
 
 ```toml
 @wanuky10:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
 ```
 
-Set token sebelum `npm install`:
+Set token GitHub Personal Access Token sebelum `npm install`:
 
 ```powershell
+# PowerShell
 $env:NODE_AUTH_TOKEN = "ghp_..."
 ```
 
-```json
-"dependencies": {
-  "@wanuky10/template-engine": "1.1.0",
-  "@wanuky10/web-editor": "1.2.0"
-}
-```
-
-### Cara 2 — `file:` (development lokal, satu mesin)
+Tambahkan ke `package.json` proyek:
 
 ```json
 "dependencies": {
-  "@wanuky10/template-engine": "file:../../wanuky-lib/packages/template-engine",
-  "@wanuky10/web-editor":       "file:../../wanuky-lib/packages/web-editor"
+  "@wanuky10/template-engine": "2.0.0",
+  "@wanuky10/web-editor": "2.0.0"
 }
 ```
 
-### Cara 3 — git+ssh (bekerja di semua mesin)
+Kemudian jalankan:
 
 ```bash
-# Di wanuky-lib: buat tag versi sekali per release
-git tag v1.1.0
-git push origin v1.1.0
-```
-
-```json
-"dependencies": {
-  "@wanuky10/template-engine": "git+ssh://git@github.com/Wanuky10/wanuky-lib.git#v1.1.0",
-  "@wanuky10/web-editor":       "git+ssh://git@github.com/Wanuky10/wanuky-lib.git#v1.1.0"
-}
-```
-
-### Cara 4 — tarball (paling stabil, tidak butuh akses git saat deploy)
-
-```bash
-# Di wanuky-lib, jalankan sekali per release:
-cd packages/template-engine && npm pack --pack-destination ../../dist/
-cd packages/web-editor      && npm pack --pack-destination ../../dist/
-# Commit folder dist/ ke repo
-```
-
-```json
-"dependencies": {
-  "@wanuky10/template-engine": "file:../../wanuky-lib/dist/wanuky10-template-engine-1.1.0.tgz",
-  "@wanuky10/web-editor":       "file:../../wanuky-lib/dist/wanuky10-web-editor-1.2.0.tgz"
-}
+npm install
 ```
 
 ---
 
 ## Template Engine
 
+Package `@wanuky10/template-engine` adalah SSR template engine kustom berbasis Node.js ES Modules. Berjalan di server — tidak perlu build tool, tidak ada external dependency.
+
 ### Setup Template Engine
 
 ```js
 // backend/config/templateEngine.js
-import { buatEngine } from '@wanuky/template-engine';
+import { buatEngine } from '@wanuky10/template-engine';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 
@@ -107,47 +83,56 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export const engine = buatEngine({
   dirViews:   resolve(__dirname, '../../frontend/views'),
   dirLayouts: resolve(__dirname, '../../frontend/views/layouts'),
-  cache: true,  // default true — matikan saat development hot-reload
+  cache:      true,      // default true — false untuk development
+  hotReload:  false,     // true = auto-invalidate cache saat file berubah (development)
 });
 ```
 
-Pakai di controller:
+Gunakan di controller:
 
 ```js
 // backend/controllers/beranda/berandaController.js
 import { engine } from '../../config/templateEngine.js';
 
 export async function tampilBeranda(req, res) {
-  const html = engine.render('pages/beranda/index.html', {
-    judul: 'Beranda',
-    pengguna: req.pengguna,
-  }, 'utama'); // 'utama' = layouts/utama.html
+  const html = await engine.render('pages/beranda/index.html', {
+    judul:     'Beranda',
+    pengguna:  req.pengguna,
+    produk:    [],
+  }, 'utama'); // 'utama' → layouts/utama.html
 
   res.send(html);
 }
 ```
 
-Struktur direktori views yang diharapkan:
+Opsi `buatEngine`:
 
-```
-frontend/views/
-├── layouts/
-│   └── utama.html          ← layout utama dengan <contents></contents>
-├── pages/
-│   └── beranda/
-│       └── index.html      ← konten halaman
-└── partials/
-    ├── header.html
-    └── footer.html
+| Opsi | Tipe | Default | Keterangan |
+|---|---|---|---|
+| `dirViews` | string | — | Path absolut direktori views |
+| `dirLayouts` | string | — | Path absolut direktori layouts |
+| `cache` | boolean | `true` | Cache file di memori |
+| `hotReload` | boolean | `false` | Auto-invalidasi cache via `fs.watch` |
+
+API engine yang tersedia:
+
+```js
+engine.render('path/view.html', data, 'namaLayout');   // render dengan layout
+engine.render('path/view.html', data);                  // render tanpa layout
+engine.renderString('<p><{ nama }></p>', { nama: 'X' }); // render string langsung
+engine.kosongkanCache();                                // kosongkan semua cache
+engine.invalidasiCache('/path/absolut/file.html');      // invalidasi satu file
+engine.matikanHotReload();                              // hentikan fs.watch
+engine.ukuranCache;                                     // jumlah file di-cache
 ```
 
 ---
 
 ### Interpolasi
 
-Menyisipkan nilai dari data ke HTML. Auto-escape XSS secara otomatis.
+Sisipkan nilai dari data ke HTML. XSS auto-escape aktif secara default.
 
-**Sintaks:** `<{ namaVariabel }>`
+**Sintaks:** `<{ variabel }>`
 
 ```html
 <!-- data: { judul: 'Selamat Datang', pengguna: { nama: 'Wahid' } } -->
@@ -159,22 +144,22 @@ Menyisipkan nilai dari data ke HTML. Auto-escape XSS secara otomatis.
 <p>Halo, <{ pengguna.nama }>!</p>
 <!-- output: <p>Halo, Wahid!</p> -->
 
-<!-- Nilai tidak ada → string kosong (tidak error) -->
+<!-- Nilai tidak ditemukan → string kosong (tidak error) -->
 <p><{ tidakAda }></p>
 <!-- output: <p></p> -->
 
-<!-- XSS otomatis di-escape -->
+<!-- XSS auto-escape -->
 <!-- data: { input: '<script>alert(1)</script>' } -->
 <div><{ input }></div>
 <!-- output: <div>&lt;script&gt;alert(1)&lt;/script&gt;</div> -->
 ```
 
-**Raw HTML (tanpa escaping)** — hanya untuk konten internal yang sudah terpercaya:
+**Raw HTML (tanpa escaping)** — hanya untuk konten terpercaya dari server:
 
 ```html
-<!-- Prefix ! = raw mode, TIDAK di-escape -->
-<!-- data: { kontenHtml: '<strong>Penting</strong>' } -->
-<div><{ !kontenHtml }></div>
+<!-- Prefix ! = raw mode -->
+<!-- data: { isi: '<strong>Penting</strong>' } -->
+<div><{ !isi }></div>
 <!-- output: <div><strong>Penting</strong></div> -->
 ```
 
@@ -182,29 +167,114 @@ Menyisipkan nilai dari data ke HTML. Auto-escape XSS secara otomatis.
 
 ---
 
+### Filter
+
+Filter mengubah nilai sebelum ditampilkan. Sintaks: `<{ nilai | filter }>` atau berantai `<{ nilai | filter1 | filter2 }>`.
+
+**Contoh:**
+
+```html
+<!-- data: { judul: 'hello world', harga: 15000, tgl: '2024-01-15' } -->
+
+<{ judul | uppercase }>          <!-- HELLO WORLD -->
+<{ judul | capitalize }>         <!-- Hello world -->
+<{ judul | titlecase }>          <!-- Hello World -->
+<{ judul | truncate: 5 }>        <!-- hello… -->
+<{ judul | truncate: 5, '...' }> <!-- hello... -->
+<{ harga | currency }>           <!-- Rp 15.000 -->
+<{ harga | currency: USD, en-US }> <!-- $15,000 -->
+<{ 0.75 | percent }>             <!-- 75% -->
+<{ tgl | dateFormat: dd/MM/yyyy }> <!-- 15/01/2024 -->
+<{ tgl | timeAgo }>              <!-- X hari lalu -->
+
+<!-- Berantai -->
+<{ judul | uppercase | truncate: 8 }> <!-- HELLO WO… -->
+
+<!-- Filter array -->
+<!-- data: { tags: ['Vue', 'React', 'Node'] } -->
+<{ tags | join: ' · ' }>   <!-- Vue · React · Node -->
+<{ tags | length }>         <!-- 3 -->
+<{ tags | first }>          <!-- Vue -->
+<{ tags | last }>           <!-- Node -->
+<{ tags | reverse | join }> <!-- Node, React, Vue -->
+<{ tags | slice: 0, 2 | join }> <!-- Vue, React -->
+
+<!-- Filter objek -->
+<!-- data: { item: { a: 1, b: 2 } } -->
+<{ item | keys | join }>    <!-- a, b -->
+<{ item | values | join }>  <!-- 1, 2 -->
+```
+
+**Semua filter tersedia:**
+
+| Filter | Contoh | Keterangan |
+|---|---|---|
+| `uppercase` | `<{ v \| uppercase }>` | Huruf besar semua |
+| `lowercase` | `<{ v \| lowercase }>` | Huruf kecil semua |
+| `capitalize` | `<{ v \| capitalize }>` | Kapital huruf pertama |
+| `titlecase` | `<{ v \| titlecase }>` | Title Case setiap kata |
+| `trim` | `<{ v \| trim }>` | Hapus spasi awal/akhir |
+| `replace` | `<{ v \| replace: from, to }>` | Ganti substring |
+| `truncate` | `<{ v \| truncate: 100, '…' }>` | Potong + suffix |
+| `padStart` | `<{ v \| padStart: 5, 0 }>` | Pad dari kiri |
+| `padEnd` | `<{ v \| padEnd: 5 }>` | Pad dari kanan |
+| `slug` | `<{ v \| slug }>` | Ubah ke URL slug |
+| `default` | `<{ v \| default: 'N/A' }>` | Nilai fallback jika null/empty |
+| `bool` | `<{ v \| bool }>` | Konversi ke boolean |
+| `number` | `<{ v \| number }>` | Format ribuan locale id-ID |
+| `round` | `<{ v \| round: 2 }>` | Bulatkan N desimal |
+| `floor` | `<{ v \| floor }>` | Bulatkan ke bawah |
+| `ceil` | `<{ v \| ceil }>` | Bulatkan ke atas |
+| `abs` | `<{ v \| abs }>` | Nilai absolut |
+| `currency` | `<{ v \| currency: IDR, id-ID }>` | Format mata uang |
+| `percent` | `<{ v \| percent: 1 }>` | Format persentase |
+| `dateFormat` | `<{ v \| dateFormat: dd/MM/yyyy }>` | Format tanggal |
+| `timeAgo` | `<{ v \| timeAgo }>` | Waktu relatif ("5 menit lalu") |
+| `length` | `<{ v \| length }>` | Panjang array/string |
+| `join` | `<{ v \| join: ', ' }>` | Gabungkan array |
+| `first` | `<{ v \| first }>` | Elemen pertama |
+| `last` | `<{ v \| last }>` | Elemen terakhir |
+| `reverse` | `<{ v \| reverse }>` | Balik urutan |
+| `unique` | `<{ v \| unique }>` | Hapus duplikat |
+| `sort` | `<{ v \| sort: key }>` | Urutkan array |
+| `slice` | `<{ v \| slice: 0, 5 }>` | Ambil subset |
+| `json` | `<{ v \| json: 2 }>` | Serialize ke JSON |
+| `keys` | `<{ v \| keys }>` | Daftar kunci objek |
+| `values` | `<{ v \| values }>` | Daftar nilai objek |
+| `entries` | `<{ v \| entries }>` | Array `{key, value}` dari objek |
+
+**Raw + filter:**
+
+```html
+<!-- Prefix ! tetap bisa dikombinasi dengan filter -->
+<{ !kontenHtml | truncate: 200 }>
+```
+
+---
+
 ### Include Partial
 
-Menyisipkan file HTML lain secara rekursif. Path dihitung relatif dari file yang sedang di-render.
+Sisipkan file HTML lain secara rekursif. Path relatif dari file yang sedang di-render.
 
 **Sintaks:** `<include="path/ke/file.html">`
 
 ```html
 <!-- frontend/views/pages/beranda/index.html -->
 
-<include="../../partials/header.html">
-<include="../../partials/navigasi.html">
+<include="../../partials/core/header.html">
+<include="../../partials/core/navigasi.html">
 
 <main>
   <h1><{ judul }></h1>
 </main>
 
-<include="../../partials/footer.html">
+<include="../../partials/core/footer.html">
 ```
 
-Partial juga bisa menerima data yang sama dari konteks:
+Partial menerima data konteks yang sama:
 
 ```html
-<!-- frontend/views/partials/header.html -->
+<!-- frontend/views/partials/core/header.html -->
 <header>
   <h1><{ judul }></h1>
   <if pengguna.login>
@@ -213,16 +283,15 @@ Partial juga bisa menerima data yang sama dari konteks:
 </header>
 ```
 
-> Include bersifat rekursif (partial boleh include partial lain).
-> Proteksi circular include aktif — batas 20 level kedalaman.
+> Include bersifat rekursif — partial boleh include partial lain. Batas kedalaman: 20 level.
 
 ---
 
 ### Layout & Slot
 
-Layout adalah template wrapper (HTML shell) yang dipakai bersama oleh banyak halaman.
+Layout adalah wrapper HTML yang dipakai bersama banyak halaman.
 
-**Slot di layout:** `<contents></contents>`
+**Slot konten utama:** `<contents></contents>`
 
 ```html
 <!-- frontend/views/layouts/utama.html -->
@@ -232,272 +301,406 @@ Layout adalah template wrapper (HTML shell) yang dipakai bersama oleh banyak hal
   <meta charset="UTF-8">
   <title><{ judul }> — Nama Situs</title>
   <link rel="stylesheet" href="/css/main.css">
+  <script src="https://kit.fontawesome.com/cce81db6df.js" crossorigin="anonymous"></script>
 </head>
 <body>
-  <include="../../partials/navbar.html">
+  <include="../../partials/core/navbar.html">
 
   <main class="container">
     <contents></contents>
   </main>
 
-  <include="../../partials/footer.html">
-  <script src="/js/app.js" type="module"></script>
+  <include="../../partials/core/footer.html">
+  <script src="/js/core/ui.js" type="module"></script>
 </body>
 </html>
 ```
 
-Konten halaman disisipkan otomatis ke slot `<contents></contents>`.
-
 ```js
-// Render dengan layout
-engine.render('pages/akun/profil.html', data, 'utama');
+// Render dengan layout 'utama' → layouts/utama.html
+engine.render('pages/produk/daftar.html', data, 'utama');
 
-// Render tanpa layout (hanya view mentah)
-engine.render('pages/akun/profil.html', data);
+// Render tanpa layout
+engine.render('pages/produk/daftar.html', data);
 
-// Render string langsung tanpa file (berguna untuk email/snippet)
+// Render string langsung (untuk email, snippet, dsb.)
 engine.renderString('<p>Halo <{ nama }>!</p>', { nama: 'Wahid' });
 ```
 
 ---
 
-### Loop `<each>`
+### Named Slots
 
-Mengiterasi array. Dua sintaks yang tersedia.
+Untuk menyuntikkan konten ke beberapa area layout yang berbeda (bukan hanya satu `<contents>`), gunakan **named slots**.
 
-**Sintaks dasar:**
+**Di layout:** `<slot name="nama">konten default</slot>`
+
+**Di view halaman:** `<fill name="nama">konten pengganti</fill>`
 
 ```html
-<each namaItem in namaKoleksi>
-  ... konten per item ...
-</each>
+<!-- frontend/views/layouts/utama.html -->
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title><{ judul }></title>
+  <!-- Slot untuk memasukkan CSS tambahan per halaman -->
+  <slot name="styles"></slot>
+</head>
+<body>
+  <main>
+    <contents></contents>
+  </main>
+  <!-- Slot untuk script per halaman, dengan konten default kosong -->
+  <slot name="scripts"></slot>
+</body>
+</html>
 ```
 
-**Sintaks dengan alias indeks:**
+```html
+<!-- frontend/views/pages/dashboard/index.html -->
+
+<!-- Fill untuk slot 'styles' di layout -->
+<fill name="styles">
+  <link rel="stylesheet" href="/css/dashboard/index.css">
+</fill>
+
+<!-- Fill untuk slot 'scripts' di layout -->
+<fill name="scripts">
+  <script src="/js/dashboard/index.js" type="module"></script>
+</fill>
+
+<!-- Konten utama halaman (masuk ke <contents></contents>) -->
+<section class="dashboard">
+  <h1><{ judul }></h1>
+</section>
+```
+
+> Konten di dalam `<fill>` tidak ditampilkan di posisi aslinya di view — ia akan dipindahkan ke slot yang sesuai di layout.
+
+---
+
+### Loop `<each>`
+
+Iterasi array. Tersedia metadata loop otomatis.
+
+**Sintaks:**
 
 ```html
-<each namaIndeks, namaItem in namaKoleksi>
-  ...
-</each>
+<each item in koleksi>...</each>
+<each indeks, item in koleksi>...</each>
 ```
 
 **Contoh:**
 
 ```html
-<!-- data: { produk: [{nama:'Kopi', harga:15000}, {nama:'Teh', harga:8000}] } -->
+<!-- data: { produk: [{nama:'Kopi',harga:15000},{nama:'Teh',harga:8000}] } -->
 
 <ul>
   <each item in produk>
-    <li><{ item.nama }> — Rp <{ item.harga }></li>
+    <li>
+      <span><{ loop.indeks | number }>. </span>
+      <{ item.nama }> — <{ item.harga | currency }>
+      <if loop.terakhir> ← terakhir</if>
+    </li>
   </each>
 </ul>
 ```
 
-**Metadata loop** — selalu tersedia tanpa konfigurasi tambahan:
-
-```html
-<each item in daftar>
-  <div class="<if loop.pertama>pertama</if><if loop.terakhir> terakhir</if>">
-    <span><{ loop.indeks }></span>    <!-- 0, 1, 2, ... -->
-    <span><{ loop.total }></span>     <!-- total item -->
-    <{ item.nama }>
-  </div>
-</each>
-```
+**Metadata loop:**
 
 | Properti | Tipe | Keterangan |
 |---|---|---|
-| `loop.indeks` | number | Indeks saat ini (mulai dari 0) |
+| `loop.indeks` | number | Indeks saat ini (mulai 0) |
 | `loop.pertama` | boolean | `true` jika item pertama |
 | `loop.terakhir` | boolean | `true` jika item terakhir |
 | `loop.total` | number | Jumlah total item |
 
-**Dengan alias indeks eksplisit:**
-
-```html
-<!-- data: { menu: ['Beranda', 'Tentang', 'Kontak'] } -->
-
-<each i, item in menu>
-  <a href="#<{ i }}"><{ item }></a>
-</each>
-<!-- output: <a href="#0">Beranda</a><a href="#1">Tentang</a>... -->
-```
-
 **Nested loop:**
 
 ```html
-<!-- data: { tabel: [['A', 'B'], ['C', 'D']] } -->
-
 <table>
   <each baris in tabel>
     <tr>
-      <each sel in baris>
-        <td><{ sel }></td>
+      <each i, sel in baris>
+        <td class="<if loop.pertama>col-pertama</if>"><{ sel }></td>
       </each>
     </tr>
   </each>
 </table>
 ```
 
+**Iterasi objek dengan `entries`:**
+
+```html
+<!-- data: { konfigurasi: { tema: 'gelap', bahasa: 'id' } } -->
+
+<each entry in konfigurasi | entries>
+  <div><{ entry.key }>: <{ entry.value }></div>
+</each>
+```
+
 ---
 
-### Kondisional `<if>`
+### Kondisional `<if>` / `<unless>`
 
-Menampilkan konten secara kondisional. Mendukung `<elseif>` dan `<else>`.
+Tampilkan konten secara kondisional.
 
-**Sintaks:**
-
-```html
-<if ekspresi>
-  ... konten jika benar ...
-<elseif ekspresi2>
-  ... konten jika ekspresi2 benar ...
-<else>
-  ... konten jika semua false ...
-</if>
-```
-
-**Ekspresi yang didukung:**
+**`<if>` — tampilkan jika benar:**
 
 ```html
-<!-- Truthy check -->
 <if pengguna.aktif>Akun aktif</if>
 
-<!-- Negasi -->
-<if !pengguna.aktif>Akun nonaktif</if>
-
-<!-- Perbandingan string -->
-<if pengguna.peran == admin>Panel Admin</if>
-<if status != pending>Selesai</if>
-
-<!-- Perbandingan angka -->
-<if stok >= 10>Tersedia</if>
-<if stok <= 0>Habis</if>
-
-<!-- Rantai elseif -->
-<if nilai >= 90>A
-<elseif nilai >= 80>B
-<elseif nilai >= 70>C
-<elseif nilai >= 60>D
-<else>E
+<if nilai >= 80>
+  <span class="lulus">Lulus</span>
+<elseif nilai >= 60>
+  <span class="remidi">Remidi</span>
+<else>
+  <span class="gagal">Gagal</span>
 </if>
 ```
 
-**Operator yang tersedia:**
+**`<unless>` — tampilkan jika SALAH (inverse dari `<if>`):**
+
+```html
+<!-- Tampilkan jika pengguna BELUM login -->
+<unless pengguna.login>
+  <a href="/masuk">Masuk</a>
+</unless>
+
+<!-- Setara dengan: -->
+<if !pengguna.login>
+  <a href="/masuk">Masuk</a>
+</if>
+```
+
+**Operator kondisi yang tersedia:**
 
 | Operator | Contoh | Keterangan |
 |---|---|---|
-| (truthy) | `<if aktif>` | Cek nilai truthy/falsy |
+| (truthy) | `<if aktif>` | Cek truthy/falsy |
 | `!` | `<if !aktif>` | Negasi |
 | `==` | `<if peran == admin>` | Sama (loose) |
 | `!=` | `<if status != tutup>` | Tidak sama |
 | `>=` | `<if nilai >= 80>` | Lebih dari atau sama |
 | `<=` | `<if stok <= 5>` | Kurang dari atau sama |
-| `<` | `<if jumlah < 10>` | Kurang dari |
+| `<` | `<if 10 < jumlah>` | Kurang dari (tukar operan) |
 
-> **Catatan:** Operator `>` (tanpa `=`) tidak bisa dipakai di kondisi template karena `>` adalah penutup tag. Gunakan `<` sebagai gantinya (tukar posisi operan).
+> `>` tidak bisa dipakai langsung karena dianggap penutup tag. Gunakan `<` dengan posisi operan ditukar, atau `>=`.
 
-**Nested if:**
+---
+
+### `<switch>`
+
+Multi-case kondisional berdasarkan nilai satu variabel.
 
 ```html
-<if pengguna.login>
-  <if pengguna.peran == admin>
+<switch pengguna.peran>
+  <when admin>
     <a href="/admin">Panel Admin</a>
-  <else>
-    <a href="/profil">Profil Saya</a>
-  </if>
-<else>
-  <a href="/masuk">Masuk</a>
-</if>
+  </when>
+  <when editor>
+    <a href="/konten">Kelola Konten</a>
+  </when>
+  <when moderator>
+    <a href="/moderasi">Moderasi</a>
+  </when>
+  <default>
+    <a href="/profil">Profil</a>
+  </default>
+</switch>
 ```
 
 ---
 
-### File Cache
+### `<with>`
 
-Template engine menyimpan konten file di memori agar tidak dibaca ulang dari disk setiap request.
+Buat scope alias untuk path bersarang yang panjang. Di dalam blok `<with>`, referensi berjalan relatif dari objek target.
 
-```js
-// Cache aktif secara default (cache: true)
-const engine = buatEngine({ dirViews, dirLayouts });
+```html
+<!-- data: { pengguna: { profil: { nama: 'Wahid', kota: 'Bandung', bio: '...' } } } -->
 
-// Cek jumlah file yang di-cache
-console.log(engine.ukuranCache); // → 5
+<!-- Tanpa with: verbose -->
+<p><{ pengguna.profil.nama }></p>
+<p><{ pengguna.profil.kota }></p>
+<p><{ pengguna.profil.bio }></p>
 
-// Kosongkan cache — diperlukan saat file template berubah
-// (berguna untuk hot-reload di development)
-engine.kosongkanCache();
-
-// Matikan cache sepenuhnya (tidak direkomendasikan di production)
-const engine = buatEngine({ dirViews, dirLayouts, cache: false });
+<!-- Dengan with: bersih -->
+<with pengguna.profil>
+  <p><{ nama }></p>
+  <p><{ kota }></p>
+  <p><{ bio }></p>
+</with>
 ```
 
-Untuk development dengan hot-reload, panggil `kosongkanCache()` setelah file berubah:
+---
+
+### `<set>`
+
+Buat variabel lokal di dalam template. Berlaku untuk scope blok saat ini dan child-nya.
+
+```html
+<!-- Set literal string -->
+<set label = "Produk Unggulan">
+<h2><{ label }></h2>
+
+<!-- Set dari path data -->
+<set totalHarga = keranjang.total>
+<p>Total: <{ totalHarga | currency }></p>
+
+<!-- Set di dalam each (scope per iterasi) -->
+<each item in produk>
+  <set kelas = "card">
+  <if loop.pertama>
+    <set kelas = "card card--unggulan">
+  </if>
+  <div class="<{ kelas }>"><{ item.nama }></div>
+</each>
+```
+
+---
+
+### Macro & `<call>`
+
+Definisikan template yang dapat dipanggil ulang seperti komponen dengan parameter.
+
+**Definisi:** `<macro namaFungsi(param1, param2)>...</macro>`
+
+**Pemanggilan:** `<call namaFungsi(param1="nilai", param2=path.data)>`
+
+```html
+<!-- Definisi macro tombol -->
+<macro tombol(label, href, tipe)>
+  <a href="<{ href }>" class="btn btn--<{ tipe }>">
+    <{ label }>
+  </a>
+</macro>
+
+<!-- Pemanggilan dengan literal -->
+<call tombol(label="Simpan", href="/simpan", tipe="primary")>
+<call tombol(label="Batal",  href="/batal",  tipe="secondary")>
+
+<!-- Pemanggilan dengan nilai dari data -->
+<!-- data: { aksi: { url: '/hapus', teks: 'Hapus' } } -->
+<call tombol(label=aksi.teks, href=aksi.url, tipe="danger")>
+```
+
+> Macro diekstrak sebelum rendering dan tidak muncul di output. Bisa didefinisikan di file partial dan di-include ke halaman yang membutuhkannya.
+
+---
+
+### Blok `<raw>`
+
+Cegah pemrosesan template di dalam blok — berguna untuk menampilkan kode contoh atau template client-side (Vue, Alpine, dsb.) yang menggunakan sintaks serupa.
+
+```html
+<raw>
+  <!-- Ini TIDAK akan diproses oleh template engine -->
+  <{ variabel }>
+  <if kondisi>...</if>
+  <each item in daftar>...</each>
+</raw>
+```
+
+---
+
+### Cache & Hot Reload
 
 ```js
-// Contoh dengan chokidar watcher
-import chokidar from 'chokidar';
+// Cache aktif secara default
+const engine = buatEngine({ dirViews, dirLayouts });
 
-chokidar.watch('frontend/views').on('change', () => {
-  engine.kosongkanCache();
-  console.log('[template-engine] Cache dikosongkan.');
+// Development: matikan cache atau aktifkan hot reload
+const engine = buatEngine({
+  dirViews,
+  dirLayouts,
+  cache:     true,
+  hotReload: true,  // fs.watch otomatis invalidasi cache saat file berubah
 });
+
+// Invalidasi manual satu file (lebih efisien dari kosongkanCache)
+engine.invalidasiCache(resolve(dirViews, 'pages/beranda/index.html'));
+
+// Kosongkan semua cache
+engine.kosongkanCache();
+
+// Hentikan hot reload watcher (misal saat server shutdown)
+engine.matikanHotReload();
+
+// Cek ukuran cache
+console.log(`${engine.ukuranCache} file di-cache`);
 ```
 
 ---
 
 ## WebEditor
 
-`@wanuky/web-editor` adalah library **khusus browser** — tidak bisa diimport di Node.js/server. Import hanya di file JavaScript frontend.
+Package `@wanuky10/web-editor` adalah library **khusus browser** — tidak kompatibel dengan Node.js karena bergantung pada DOM API, Canvas API, File, Blob, dan FileReader.
 
 ```js
 // frontend/public/js/fitur/artikel/editor.js
-import { RichTextEditor, ImageEditor } from '@wanuky/web-editor';
+import { RichTextEditor, ImageEditor } from '@wanuky10/web-editor';
+
+// Atau import terpisah (code splitting)
+import { RichTextEditor } from '@wanuky10/web-editor/rich-text';
+import { ImageEditor }    from '@wanuky10/web-editor/image';
 ```
 
 ---
 
 ### RichTextEditor
 
-Editor teks kaya berbasis `contenteditable`. Output: HTML + plain text.
+Editor teks kaya berbasis `contenteditable`. Output: HTML tersanitasi + plain text + jumlah kata.
 
 #### Inisialisasi
 
 ```js
 const rte = new RichTextEditor('#kontainer-editor', {
-  // Pilihan toolbar (pilih salah satu cara):
-
-  // Cara 1: pilih tool secara manual (urutan = urutan tampil)
+  // Daftar tool manual (urutan = urutan tampil di toolbar)
   toolbar: ['bold', 'italic', 'underline', '|', 'h2', 'h3', '|', 'ul', 'ol', '|', 'link'],
 
-  // Cara 2: gunakan preset
+  // Atau gunakan preset
   toolbarPreset: 'standard', // 'minimal' | 'standard' (default) | 'full'
 
-  // Callbacks
-  onUbah: ({ html, teks }) => {
-    // Dipanggil setiap kali konten berubah (debounce 300ms)
-    simpanDraft(html);
-  },
-  onFokus: () => console.log('Editor difokuskan'),
-  onBlur:  () => console.log('Editor kehilangan fokus'),
+  // Konten awal
+  nilaiAwal:   '<p>Draft</p>',
+  placeholder: 'Tulis di sini...',
+  readonly:    false,
+  maxLength:   5000,     // 0 = tidak terbatas
+  debounceMs:  300,      // delay event 'ubah' (ms)
 
-  // Opsi lain
-  placeholder: 'Tulis artikel di sini...',
-  debounceMs:  300,          // delay callback onUbah (ms)
-  nilaiAwal:   '<p>Draft</p>', // konten HTML awal
-  readonly:    false,         // mode hanya baca
-  maxLength:   5000,          // batas karakter (0 = tidak terbatas)
+  // Callback legacy (backward-compat, disarankan gunakan .on() sebagai gantinya)
+  onUbah:  ({ html, teks, jumlahKata }) => {},
+  onFokus: () => {},
+  onBlur:  () => {},
 });
+```
+
+#### Event System
+
+```js
+// Daftarkan event listener
+rte.on('ubah',  ({ html, teks, jumlahKata }) => {
+  console.log(`${jumlahKata} kata`);
+  simpanDraft(html);
+});
+rte.on('fokus', () => console.log('difokuskan'));
+rte.on('blur',  () => console.log('blur'));
+
+// Hapus listener
+rte.off('ubah', handler);
 ```
 
 #### Semua Tool yang Tersedia
 
-| Nama tool | Fungsi |
+| Tool | Fungsi |
 |---|---|
 | `bold` | **Tebal** |
 | `italic` | *Miring* |
 | `underline` | Garis bawah |
 | `strikethrough` | ~~Coret~~ |
+| `superscript` | Superscript (x²) |
+| `subscript` | Subscript (x₂) |
 | `h1` | Judul 1 |
 | `h2` | Judul 2 |
 | `h3` | Judul 3 |
@@ -506,28 +709,35 @@ const rte = new RichTextEditor('#kontainer-editor', {
 | `ol` | Daftar nomor |
 | `blockquote` | Kutipan |
 | `code` | Blok kode |
+| `alignLeft` | Rata kiri |
+| `alignCenter` | Rata tengah |
+| `alignRight` | Rata kanan |
+| `alignJustify` | Rata penuh |
+| `foreColor` | Warna teks (18 pilihan) |
+| `hiliteColor` | Warna sorotan/highlight |
+| `fontSize` | Ukuran font (7 pilihan: 10px–36px) |
 | `link` | Tambah tautan (modal inline) |
-| `insertImage` | Sisipkan gambar via URL |
+| `insertImage` | Sisipkan gambar via URL atau upload file |
+| `table` | Sisipkan tabel (pilih kolom × baris) |
+| `hr` | Garis pemisah horizontal |
 | `removeFormat` | Hapus semua format |
 | `undo` | Urungkan |
 | `redo` | Ulangi |
-| `\|` | Separator/pemisah toolbar |
+| `\|` | Separator toolbar |
 
 #### Preset Toolbar
 
 ```
 minimal:  bold, italic | link
 standard: bold, italic, underline | h2, h3 | ul, ol | link, removeFormat
-full:     semua tool
+full:     semua tool di atas
 ```
 
 #### API Publik
 
 ```js
 // Ambil nilai saat ini
-const { html, teks } = rte.getNilai();
-// html  → '<p><strong>Teks</strong></p>'
-// teks  → 'Teks'
+const { html, teks, jumlahKata } = rte.getNilai();
 
 // Isi editor dengan HTML
 rte.setNilai('<p>Konten baru</p>');
@@ -542,9 +752,32 @@ rte.fokus();
 rte.setReadonly(true);
 rte.setReadonly(false);
 
-// Hancurkan editor (hapus dari DOM)
+// Sisipkan HTML di posisi kursor
+rte.insertHtml('<strong>teks</strong>');
+
+// Ambil teks yang sedang diseleksi
+const teksSeleksi = rte.getSelectedText();
+
+// Scroll ke posisi kursor
+rte.scrollKeCursor();
+
+// Hancurkan (hapus dari DOM, unbind listener)
 rte.hancurkan();
 ```
+
+#### Markdown Shortcuts
+
+Ketik karakter berikut diikuti spasi untuk auto-format:
+
+| Ketik | Hasil |
+|---|---|
+| `# ` | Heading 1 |
+| `## ` | Heading 2 |
+| `### ` | Heading 3 |
+| `> ` | Blockquote |
+| ` ``` ` | Blok kode |
+| `- ` | Daftar bullet |
+| `1. ` | Daftar nomor |
 
 #### Keyboard Shortcuts
 
@@ -556,32 +789,32 @@ rte.hancurkan();
 | `Ctrl/Cmd + Z` | Undo |
 | `Ctrl/Cmd + Shift + Z` | Redo |
 
-#### Contoh Penggunaan Lengkap
+#### Contoh Penggunaan
 
 ```js
-import { RichTextEditor } from '@wanuky/web-editor';
+import { RichTextEditor } from '@wanuky10/web-editor';
 
 const editor = new RichTextEditor('#editor-artikel', {
-  toolbar: ['bold', 'italic', 'underline', 'strikethrough', '|',
-            'h2', 'h3', '|', 'ul', 'ol', 'blockquote', '|',
-            'link', 'insertImage', 'removeFormat'],
-  maxLength: 10000,
-  placeholder: 'Mulai menulis artikel...',
-  onUbah: ({ html, teks }) => {
-    // Auto-save setiap perubahan
-    fetch('/api/v1/artikel/draft', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ html, teks }),
-    });
-  },
+  toolbarPreset: 'full',
+  maxLength:     10000,
+  placeholder:   'Mulai menulis artikel...',
+});
+
+editor.on('ubah', ({ html, teks, jumlahKata }) => {
+  document.querySelector('#info-kata').textContent = `${jumlahKata} kata`;
+  // Auto-save
+  fetch('/api/v1/artikel/draft', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ html, teks }),
+  });
 });
 
 // Saat form disubmit
 document.querySelector('#form-artikel').addEventListener('submit', (e) => {
   e.preventDefault();
-  const { html, teks } = editor.getNilai();
-  // Kirim html dan teks ke server
+  const { html, teks, jumlahKata } = editor.getNilai();
+  // Kirim ke server
 });
 ```
 
@@ -589,124 +822,193 @@ document.querySelector('#form-artikel').addEventListener('submit', (e) => {
 
 ### ImageEditor
 
-Editor gambar berbasis Canvas API. Mendukung: crop, zoom, flip, rotate, brightness, contrast.
+Editor gambar berbasis Canvas API. Mendukung: crop, zoom, pan, flip, rotasi (90° dan bebas), filter warna via CSS filter, preset filter, rasio aspek crop, history/undo, pinch-to-zoom, dan drag & drop.
 
 #### Inisialisasi
 
 ```js
-import { ImageEditor } from '@wanuky/web-editor';
+import { ImageEditor } from '@wanuky10/web-editor';
 
 const imgEditor = new ImageEditor('#kontainer-image-editor', {
-  // Pilihan fitur (pilih salah satu cara):
+  // Daftar fitur manual
+  fitur: ['rotasiKiri', 'rotasiKanan', '|', 'flipH', '|', 'brightness', 'contrast', '|',
+          'preset', '|', 'crop', '|', 'undo', 'reset', 'simpan'],
 
-  // Cara 1: pilih fitur secara manual
-  fitur: ['rotasiKiri', 'rotasiKanan', '|', 'flipH', '|', 'crop', '|', 'reset', 'save'],
+  // Atau gunakan preset
+  fiturPreset: 'full', // 'minimal' | 'standard' (default) | 'full'
 
-  // Cara 2: gunakan preset
-  fiturPreset: 'standard', // 'minimal' | 'standard' (default) | 'full'
+  // Bentuk area crop
+  bentukCrop: 'rect', // 'rect' (default) | 'circle'
 
-  // Callback saat simpan
-  onSelesai: (blob) => {
-    uploadGambar(blob);
-  },
-
-  // Format output
-  formatOutput:   'image/webp',  // 'image/jpeg' (default) | 'image/png' | 'image/webp'
-  kualitasOutput: 0.9,           // 0–1 untuk JPEG/WebP (default: 0.92)
+  // Format dan kualitas output
+  formatOutput:   'jpeg',  // 'jpeg' (default) | 'png' | 'webp'
+  kualitasOutput: 0.92,    // 0–1 (default: 0.92)
 
   // Batasi ukuran output (opsional)
   ukuranMaks: { lebar: 1920, tinggi: 1080 },
+
+  // Callback legacy (disarankan gunakan .on() sebagai gantinya)
+  onSelesai: (blob) => uploadGambar(blob),
 });
+```
+
+#### Event System
+
+```js
+imgEditor.on('muat',    ({ lebar, tinggi }) => console.log(`${lebar}×${tinggi}`));
+imgEditor.on('ubah',    (nilai) => console.log('perubahan', nilai));
+imgEditor.on('selesai', (blob)  => uploadGambar(blob));
+imgEditor.on('error',   (err)   => tampilkanError(err.message));
+
+// Hapus listener
+imgEditor.off('selesai', handler);
 ```
 
 #### Semua Fitur yang Tersedia
 
-| Nama fitur | Fungsi |
+| Fitur | Fungsi |
 |---|---|
 | `rotasiKiri` | Putar kiri 90° |
 | `rotasiKanan` | Putar kanan 90° |
-| `flipH` | Flip horizontal (cermin) |
-| `flipV` | Flip vertikal |
-| `zoomMasuk` | Perbesar (+10%) |
-| `zoomKeluar` | Perkecil (-10%) |
-| `zoomReset` | Reset zoom ke 1:1 |
-| `brightness` | Slider kecerahan (-100 s/d +100) |
-| `contrast` | Slider kontras (-100 s/d +100) |
-| `crop` | Mode potong dengan 8 resize handle |
-| `reset` | Reset semua perubahan |
-| `save` | Simpan dan panggil `onSelesai` |
+| `flipH` | Cermin horizontal |
+| `flipV` | Cermin vertikal |
+| `zoomMasuk` | Perbesar (+15%) |
+| `zoomKeluar` | Perkecil (-15%) |
+| `zoomReset` | Reset zoom ke 1× |
+| `brightness` | Slider kecerahan (−100 s/d +100) |
+| `contrast` | Slider kontras (−100 s/d +100) |
+| `saturasi` | Slider saturasi (−100 s/d +100) |
+| `hue` | Slider hue rotate (−180° s/d +180°) |
+| `blur` | Slider blur (0–10px) |
+| `grayscale` | Slider abu-abu (0–100%) |
+| `sepia` | Slider sepia (0–100%) |
+| `rotasiSudut` | Slider rotasi bebas (−180° s/d +180°) |
+| `preset` | Dropdown preset filter (6 pilihan) |
+| `aspekRasio` | Dropdown rasio aspek crop (8 pilihan) |
+| `crop` | Mode potong dengan resize handle |
+| `undo` | Urungkan aksi terakhir (max 20 langkah) |
+| `reset` | Reset semua ke kondisi awal |
+| `simpan` | Simpan & emit event 'selesai' |
 | `\|` | Separator toolbar |
 
 #### Preset Fitur
 
 ```
-minimal:  crop | save
-standard: rotasiKiri, rotasiKanan | flipH | crop | reset, save
-full:     semua fitur
+minimal:  crop | simpan
+standard: rotasiKiri, rotasiKanan | flipH | brightness, contrast | crop | undo, reset, simpan
+full:     semua fitur di atas
 ```
+
+#### Preset Filter Bawaan
+
+Tersedia via tombol `preset` di toolbar:
+
+| Preset | Efek |
+|---|---|
+| `Original` | Reset semua filter ke netral |
+| `Vivid` | Warna lebih cerah dan jenuh |
+| `Warm` | Nuansa hangat kekuningan |
+| `Cool` | Nuansa dingin kebiru-biruan |
+| `Noir` | Hitam putih kontras tinggi |
+| `Vintage` | Efek klasik kecoklatan |
+
+#### Rasio Aspek Crop
+
+Tersedia via tombol `aspekRasio` di toolbar:
+
+| Rasio | Keterangan |
+|---|---|
+| Bebas | Tanpa batasan (default) |
+| 1:1 | Persegi |
+| 4:3 | Standar foto/layar lama |
+| 3:2 | Standar kamera DSLR |
+| 16:9 | Widescreen |
+| 9:16 | Vertikal (story/reels) |
+| 2:3 | Portrait |
+| 3:4 | Portrait lebar |
 
 #### Interaksi Canvas
 
 | Aksi | Cara |
 |---|---|
-| **Pan** (geser gambar) | Drag di canvas (mode normal) |
-| **Zoom** | Scroll mouse di canvas |
-| **Crop** | Aktifkan mode crop → drag untuk seleksi area |
-| **Resize crop** | Tarik 8 handle di sudut/tepi area crop |
+| **Pan** (geser gambar) | Drag mouse/touch di canvas |
+| **Zoom** | Scroll mouse atau pinch-to-zoom (mobile) |
+| **Crop** | Aktifkan mode crop → drag untuk area seleksi |
+| **Resize crop** | Tarik handle di sudut/tepi area crop |
+| **Pindah crop** | Drag area crop yang sudah ada |
+| **Pan keyboard** | Tombol panah ← ↑ → ↓ saat canvas difokuskan |
+| **Zoom keyboard** | Tombol `+`/`-` saat canvas difokuskan |
+| **Undo keyboard** | `Ctrl+Z` saat canvas difokuskan |
 
 #### API Publik
 
 ```js
-// Muat gambar dari file input
-const fileInput = document.querySelector('#input-gambar');
-fileInput.addEventListener('change', (e) => {
-  imgEditor.muatFile(e.target.files[0]);
-});
+// Muat gambar dari File object
+imgEditor.muatFile(file);
 
-// Simpan hasil edit sebagai Blob (async)
-const blob = await imgEditor.simpan();
+// Muat gambar dari URL (data URL, object URL, atau URL biasa)
+await imgEditor.muatUrl('https://example.com/gambar.jpg');
+await imgEditor.muatUrl(dataUrlString);
 
-// Terapkan crop yang sudah diseleksi secara programatik
+// Terapkan area crop yang aktif ke gambar (bakes crop)
 imgEditor.terapkanCrop();
 
-// Ambil hasil sebagai data URL string
-const dataUrl = imgEditor.getDataUrl();
+// Simpan hasil sebagai Promise<Blob>
+const blob = await imgEditor.simpan();
 
-// Hancurkan editor
+// Ambil data URL string dari kanvas saat ini
+const dataUrl = imgEditor.getDataUrl('jpeg', 0.9);
+
+// Dapatkan info editor saat ini
+const info = imgEditor.dapatkanInfo();
+// → { lebar, tinggi, rotasi, sudutBebas, flipH, flipV, zoom, filter: {...}, versi }
+
+// Undo (kembali ke state sebelumnya)
+imgEditor.undo();
+
+// Hancurkan (hapus DOM, clear listener)
 imgEditor.hancurkan();
 ```
 
 #### Contoh Upload Gambar Profil
 
 ```js
-import { ImageEditor } from '@wanuky/web-editor';
+import { ImageEditor } from '@wanuky10/web-editor';
 
 const editor = new ImageEditor('#editor-foto-profil', {
-  fitur: ['rotasiKiri', 'rotasiKanan', '|', 'flipH', '|', 'crop', '|', 'reset', 'save'],
-  formatOutput:   'image/webp',
+  fiturPreset:    'full',
+  bentukCrop:     'circle',
+  formatOutput:   'webp',
   kualitasOutput: 0.85,
-  ukuranMaks: { lebar: 800, tinggi: 800 },
-  onSelesai: async (blob) => {
-    const formData = new FormData();
-    formData.append('foto', blob, 'profil.webp');
-
-    const res = await fetch('/api/v1/pengguna/foto-profil', {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (res.ok) tampilkanToast('Foto profil berhasil diperbarui');
-  },
+  ukuranMaks:     { lebar: 800, tinggi: 800 },
 });
 
-// Buka file picker saat tombol diklik
+editor.on('muat', ({ lebar, tinggi }) => {
+  console.log(`Gambar dimuat: ${lebar}×${tinggi}px`);
+});
+
+editor.on('selesai', async (blob) => {
+  const formData = new FormData();
+  formData.append('foto', blob, 'profil.webp');
+
+  const res = await fetch('/api/v1/pengguna/foto-profil', {
+    method: 'POST',
+    body:   formData,
+  });
+
+  if (res.ok) tampilkanToast('Foto profil berhasil diperbarui');
+});
+
+// Buka file picker
 document.querySelector('#btn-ganti-foto').addEventListener('click', () => {
   const input = document.createElement('input');
-  input.type = 'file';
+  input.type   = 'file';
   input.accept = 'image/*';
   input.onchange = (e) => editor.muatFile(e.target.files[0]);
   input.click();
 });
+
+// Atau drag & drop — editor sudah menangani ini secara otomatis
 ```
 
 ---
@@ -717,38 +1019,43 @@ document.querySelector('#btn-ganti-foto').addEventListener('click', () => {
 
 ```
 proyek/
+├── .npmrc                          ← konfigurasi GitHub Packages
+├── package.json
 ├── backend/
 │   ├── config/
-│   │   └── templateEngine.js     ← inisialisasi engine sekali
+│   │   └── templateEngine.js       ← inisialisasi engine sekali
 │   └── controllers/
 │       └── [fitur]/
 │           └── [fitur]Controller.js
 └── frontend/
     ├── views/
     │   ├── layouts/
-    │   │   └── utama.html         ← layout dengan <contents></contents>
+    │   │   └── utama.html           ← layout dengan <contents></contents>
     │   ├── pages/
     │   │   └── [fitur]/
     │   │       └── index.html
     │   └── partials/
-    │       └── [komponen].html
+    │       ├── core/
+    │       │   ├── navbar.html
+    │       │   └── footer.html
+    │       └── [fitur]/
     └── public/
         └── js/
             └── [fitur]/
-                └── editor.js      ← import RichTextEditor / ImageEditor
+                └── editor.js        ← import RichTextEditor / ImageEditor
 ```
 
-### Pola Controller
+### Pola Controller SSR
 
 ```js
 // backend/controllers/artikel/artikelController.js
-import { engine } from '../../config/templateEngine.js';
-import { ambilArtikel } from '../../services/artikel/artikelService.js';
+import { engine }         from '../../config/templateEngine.js';
+import { ambilArtikel }   from '../../services/artikel/artikelService.js';
 
 export async function tampilArtikel(req, res, next) {
   try {
     const artikel = await ambilArtikel(req.params.id);
-    const html = engine.render('pages/artikel/detail.html', { artikel }, 'utama');
+    const html = await engine.render('pages/artikel/detail.html', { artikel }, 'utama');
     res.send(html);
   } catch (err) {
     next(err);
@@ -756,20 +1063,18 @@ export async function tampilArtikel(req, res, next) {
 }
 ```
 
-### Menyimpan Output Editor ke Database
+### Simpan Output RichTextEditor ke Database
 
 ```js
-// backend/controllers/artikel/simpanArtikelController.js
-// Saat form artikel disubmit, frontend mengirim { html, teks }
-
+// Server menerima { html, teks } dari fetch POST frontend
 export async function simpanArtikel(req, res) {
   const { judul, html, teks } = req.body;
 
-  // `html` → disimpan dan ditampilkan di halaman (sudah ter-sanitasi oleh RTE)
-  // `teks` → dipakai untuk search index, preview, atau meta description
+  // html  → disimpan dan ditampilkan (sudah ter-sanitasi oleh RTE)
+  // teks  → untuk search index, preview, meta description
   await buatArtikel({ judul, kontenHtml: html, kontenTeks: teks });
 
-  res.json({ status: 'success', message: 'Artikel berhasil disimpan.' });
+  return successResponse(res, 201, 'Artikel berhasil disimpan');
 }
 ```
 
@@ -779,40 +1084,61 @@ export async function simpanArtikel(req, res) {
 
 ### Template Engine
 
-**`>` tanpa `=` di kondisi:**
-Karakter `>` di dalam `<if>` dianggap penutup tag. Untuk perbandingan "lebih dari", tukar posisi operan dan gunakan `<`:
+**Operator `>` di kondisi:**
+Karakter `>` di dalam `<if>` dianggap penutup tag. Untuk "lebih dari", tukar operan dan gunakan `<` atau ganti ke `>=`:
 
 ```html
 <!-- ✗ Tidak bisa: -->
 <if jumlah > 10>Banyak</if>
 
-<!-- ✓ Tukar menjadi: -->
+<!-- ✓ Tukar posisi operan: -->
 <if 10 < jumlah>Banyak</if>
-<!-- atau gunakan >= -->
+
+<!-- ✓ Atau gunakan >= dengan nilai +1: -->
 <if jumlah >= 11>Banyak</if>
 ```
 
-**Cache di development:**
-Aktifkan pengosongan cache saat file berubah agar perubahan template langsung terlihat tanpa restart server.
-
 **Include path:**
-Path di `<include="...">` selalu relatif dari file yang sedang di-render, bukan dari `dirViews`.
+Path di `<include="...">` selalu relatif dari **file yang sedang di-render**, bukan dari `dirViews`.
+
+**Hot reload:**
+Aktifkan `hotReload: true` di development agar perubahan template langsung terlihat tanpa restart server. Matikan di production — `fs.watch` memiliki overhead I/O.
+
+**`<macro>` bersifat global per render:**
+Macro yang didefinisikan di partial yang di-include tetap tersedia di seluruh halaman dalam satu siklus render.
 
 ### WebEditor
 
 **Hanya berjalan di browser:**
-Jangan import `@wanuky/web-editor` di file Node.js/server. Gunakan hanya di file JavaScript yang di-load browser.
+Jangan import `@wanuky10/web-editor` di file Node.js/server. Gunakan hanya di JavaScript yang diload browser (`type="module"`).
 
-**CSS:**
-Kedua editor membutuhkan styling CSS. Tambahkan kelas berikut di `components.css`:
-- `.wanuky-rte` — container RichTextEditor
-- `.wanuky-rte__toolbar`, `.wanuky-rte__area`, `.wanuky-rte__modal` — bagian RTE
-- `.wanuky-img-editor` — container ImageEditor
-- `.wanuky-img-editor__toolbar`, `.wanuky-img-editor__kanvas` — bagian ImageEditor
+**CSS editor:**
+Kedua editor perlu styling. Gunakan class selector berikut di `public/css/components.css`:
+
+```css
+/* RichTextEditor */
+.wanuky-rte { ... }
+.wanuky-rte__toolbar { ... }
+.wanuky-rte__area { ... }
+
+/* ImageEditor */
+.wanuky-ie { ... }
+.wanuky-ie__toolbar { ... }
+.wanuky-ie__canvas { ... }
+.wanuky-ie__panel { ... }
+.wanuky-ie__drop { ... }
+.wanuky-ie__btn { ... }
+.wanuky-ie__btn--aktif { ... }
+.wanuky-ie__slider { ... }
+.wanuky-ie__dropdown { ... }
+```
+
+**CSS filter browser support:**
+`CanvasRenderingContext2D.filter` (digunakan ImageEditor v2.0.0 untuk brightness, contrast, saturasi, hue, blur, grayscale, sepia) didukung di Chrome 47+, Firefox 49+, Safari 18+. Pada browser lama, filter warna tidak berefek tetapi editor tetap berfungsi.
 
 **`document.execCommand` deprecated:**
-RichTextEditor menggunakan `execCommand` yang statusnya deprecated di spec W3C tapi masih didukung semua browser modern. Untuk proyek jangka panjang, pertimbangkan migrasi ke Selection API di versi berikutnya.
+RichTextEditor menggunakan `execCommand` yang secara teknis deprecated di spesifikasi W3C, namun masih didukung penuh di semua browser modern. Tidak ada pengganti universal untuk contenteditable editing API.
 
 ---
 
-*wanuky-lib v1.1.0 — dibuat untuk kebutuhan proyek pribadi.*
+*wanuky-lib v2.0.0 — dibuat untuk kebutuhan proyek pribadi.*

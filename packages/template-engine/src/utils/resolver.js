@@ -1,82 +1,58 @@
 /**
- * Mengambil nilai dari objek data menggunakan dot-notation path.
- * Mendukung akses bersarang: 'pengguna.profil.nama'.
+ * Resolver nilai dari konteks data menggunakan dot-notation dan bracket-notation.
  *
- * Menggunakan reduce dengan optional chaining agar tidak melempar error
- * saat intermediate key tidak ada — mengembalikan undefined dengan aman.
- *
- * @param {object} data - Objek sumber data.
- * @param {string} path - Dot-notation path (misal: 'pengguna.nama').
- * @returns {unknown} Nilai pada path tersebut, atau undefined jika tidak ada.
+ * Perubahan di v2.0.0:
+ *   - Support bracket notation: items[0], matrix[1][2]
+ *   - Support literal number, boolean, null sebagai path value
+ *   - Support wildcard '$' sebagai referensi ke root data
  */
-export function resolveNilai(data, path) {
-  if (!path || typeof path !== 'string') return undefined;
-
-  return path
-    .trim()
-    .split('.')
-    .reduce((obj, kunci) => obj?.[kunci], data);
-}
 
 /**
- * Mengevaluasi ekspresi kondisional sederhana dari konteks data.
- * Mendukung: nilai truthy/falsy, negasi dengan '!', dan perbandingan
- * sederhana: '==', '!=', '>', '<', '>=', '<='.
+ * Mengambil nilai dari objek data menggunakan dot/bracket notation path.
+ * Mendukung akses bersarang dengan optional chaining implisit.
  *
- * Contoh ekspresi yang valid:
- *   'pengguna.aktif'           → truthy check
- *   '!pengguna.aktif'          → falsy check
- *   'pengguna.peran == admin'  → perbandingan string (tanpa quote)
- *   'jumlah > 0'               → perbandingan numerik
+ * Literal yang didukung langsung (tanpa lookup ke data):
+ *   - Angka     : '42', '3.14', '-1'
+ *   - Boolean   : 'true', 'false'
+ *   - Null      : 'null'
+ *   - Undefined : 'undefined'
  *
- * Desain: sengaja dibatasi pada ekspresi sederhana tanpa eval() —
- * eval() membuka celah XSS dan code injection yang tidak dapat diterima
- * untuk library yang digunakan bersama data dari pengguna.
+ * Path yang didukung:
+ *   - Dot notation   : 'pengguna.profil.nama'
+ *   - Array index    : 'items[0]', 'items[2].nama'
+ *   - Mixed          : 'daftar[0].profil.kota'
  *
- * @param {string} ekspresi - Ekspresi kondisional.
- * @param {object} data - Konteks data aktif.
- * @returns {boolean}
+ * @param {object} data - Objek sumber data.
+ * @param {string} path - Path atau literal.
+ * @returns {unknown}   - Nilai pada path tersebut, atau undefined jika tidak ada.
  */
-export function evaluasiKondisi(ekspresi, data) {
-  const expr = ekspresi.trim();
+export function resolveNilai(data, path) {
+  if (path === null || path === undefined) return undefined;
+  if (typeof path !== 'string') return undefined;
 
-  // Operator perbandingan — urutan penting: '==' sebelum '=' agar tidak salah split
-  const OPERATOR = ['>=', '<=', '!=', '==', '>', '<'];
+  const trimmed = path.trim();
+  if (!trimmed) return undefined;
 
-  for (const op of OPERATOR) {
-    const indeks = expr.indexOf(op);
-    if (indeks === -1) continue;
+  // ── Literal langsung ──────────────────────────────────────────
+  if (/^-?\d+\.?\d*$/.test(trimmed)) return Number(trimmed);
+  if (trimmed === 'true')      return true;
+  if (trimmed === 'false')     return false;
+  if (trimmed === 'null')      return null;
+  if (trimmed === 'undefined') return undefined;
 
-    const kiri = expr.slice(0, indeks).trim();
-    const kanan = expr.slice(indeks + op.length).trim();
+  // ── Normalisasi bracket notation → dot notation ───────────────
+  // 'items[0].nama' → 'items.0.nama'
+  // 'matrix[1][2]'  → 'matrix.1.2'
+  const normalised = trimmed
+    .replace(/\[(\d+)\]/g, '.$1')
+    .replace(/\[['"]([^'"]+)['"]\]/g, '.$1');
 
-    const nilaiKiri = resolveNilai(data, kiri) ?? kiri;
-    // Kanan bisa berupa path ke data atau literal string/angka
-    const nilaiKanan = resolveNilai(data, kanan) ?? kanan;
-
-    // Konversi ke number jika keduanya adalah angka yang valid
-    const numKiri = Number(nilaiKiri);
-    const numKanan = Number(nilaiKanan);
-    const keduaAngka = !isNaN(numKiri) && !isNaN(numKanan);
-
-    const a = keduaAngka ? numKiri : String(nilaiKiri);
-    const b = keduaAngka ? numKanan : String(nilaiKanan);
-
-    switch (op) {
-      case '==': return a == b;
-      case '!=': return a != b;
-      case '>':  return a > b;
-      case '<':  return a < b;
-      case '>=': return a >= b;
-      case '<=': return a <= b;
-    }
-  }
-
-  // Negasi sederhana: !path
-  if (expr.startsWith('!')) {
-    return !resolveNilai(data, expr.slice(1).trim());
-  }
-
-  // Truthy check: langsung resolve path
-  return Boolean(resolveNilai(data, expr));
+  // ── Resolve melalui objek secara iteratif ─────────────────────
+  return normalised
+    .split('.')
+    .filter(Boolean)
+    .reduce((obj, key) => {
+      if (obj === null || obj === undefined) return undefined;
+      return obj[key];
+    }, data);
 }

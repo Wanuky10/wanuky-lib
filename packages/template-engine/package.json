@@ -1,7 +1,7 @@
 {
   "name": "@wanuky10/template-engine",
-  "version": "1.1.0",
-  "description": "Custom SSR template engine: interpolasi, include partial, layout/slot, loop, elseif",
+  "version": "2.0.0",
+  "description": "Custom SSR template engine: interpolasi, filter/pipe, include partial, layout/slot, named slots, loop, if/unless/switch/with, macro/call, set, raw block, boolean expressions",
   "type": "module",
   "main": "src/index.js",
   "exports": {
