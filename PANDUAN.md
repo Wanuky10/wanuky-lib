@@ -1,4 +1,4 @@
-# Panduan wanuky-lib v2.0.0
+# Panduan wanuky-lib v2.1.0
 
 Library internal untuk proyek website pribadi. Terdiri dari dua package:
 
@@ -10,7 +10,7 @@ Library internal untuk proyek website pribadi. Terdiri dari dua package:
 ## Daftar Isi
 
 1. [Instalasi](#instalasi)
-2. [Template Engine v2.0.0](#template-engine)
+2. [Template Engine v2.1.0](#template-engine)
    - [Setup](#setup-template-engine)
    - [Interpolasi](#interpolasi)
    - [Filter](#filter)
@@ -27,7 +27,7 @@ Library internal untuk proyek website pribadi. Terdiri dari dua package:
    - [Cache & LRU](#cache--lru)
    - [`renderAsync`](#renderasync)
    - [`TemplateError`](#templateerror)
-3. [WebEditor v2.0.0](#webeditor)
+3. [WebEditor v2.1.0](#webeditor)
    - [RichTextEditor](#richtexteditor)
    - [ImageEditor](#imageeditor)
    - [EditorError](#editorerror)
@@ -59,8 +59,8 @@ Tambahkan ke `package.json` proyek:
 
 ```json
 "dependencies": {
-  "@wanuky10/template-engine": "2.0.0",
-  "@wanuky10/web-editor": "2.0.0"
+  "@wanuky10/template-engine": "2.1.0",
+  "@wanuky10/web-editor": "2.1.0"
 }
 ```
 
@@ -748,7 +748,7 @@ import { RichTextEditor, ImageEditor } from '@wanuky10/web-editor';
 import { RichTextEditor } from '@wanuky10/web-editor/rich-text';
 import { ImageEditor }    from '@wanuky10/web-editor/image';
 
-// Export tambahan v2.0.0
+// Export tambahan v2.1.0
 import {
   EditorError,              // custom error class
   sanitasi,                 // HTML sanitizer
@@ -1357,11 +1357,11 @@ Kedua editor perlu styling. Gunakan class selector berikut di `public/css/compon
 ```
 
 **CSS filter browser support:**
-`CanvasRenderingContext2D.filter` (digunakan ImageEditor v2.0.0 untuk brightness, contrast, saturasi, hue, blur, grayscale, sepia) didukung di Chrome 47+, Firefox 49+, Safari 18+. Pada browser lama, filter warna tidak berefek tetapi editor tetap berfungsi.
+`CanvasRenderingContext2D.filter` (digunakan ImageEditor v2.1.0 untuk brightness, contrast, saturasi, hue, blur, grayscale, sepia) didukung di Chrome 47+, Firefox 49+, Safari 18+. Pada browser lama, filter warna tidak berefek tetapi editor tetap berfungsi.
 
 **`document.execCommand` deprecated:**
 RichTextEditor menggunakan `execCommand` yang secara teknis deprecated di spesifikasi W3C, namun masih didukung penuh di semua browser modern. Tidak ada pengganti universal untuk contenteditable editing API.
 
 ---
 
-*wanuky-lib v2.0.0 — dibuat untuk kebutuhan proyek pribadi.*
+*wanuky-lib v2.1.0 — dibuat untuk kebutuhan proyek pribadi.*
