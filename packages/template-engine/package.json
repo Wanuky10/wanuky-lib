@@ -22,7 +22,7 @@
     "access": "restricted"
   },
   "scripts": {
-    "test": "node --test tests/templateEngine.test.js"
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=18.0.0"

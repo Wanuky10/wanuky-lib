@@ -22,6 +22,7 @@
 
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
+import { TemplateError } from './errors.js';
 import {
   protectRawBlocks,
   restoreRawBlocks,
@@ -73,9 +74,8 @@ export function renderTemplate(template, data, baseDir, opsi = {}) {
   const { bacaFile = bacaFileDefault, kedalaman = 0 } = opsi;
 
   if (kedalaman > BATAS_KEDALAMAN_INCLUDE) {
-    throw new Error(
-      `[template-engine] Batas kedalaman include terlampaui ` +
-      `(maksimum: ${BATAS_KEDALAMAN_INCLUDE} level). ` +
+    throw new TemplateError(
+      `Batas kedalaman include terlampaui (maksimum: ${BATAS_KEDALAMAN_INCLUDE} level). ` +
       `Periksa kemungkinan circular include di ${baseDir}.`,
     );
   }
@@ -142,7 +142,8 @@ export function renderHalaman(pathView, data, namaLayout, dirLayouts, bacaFile =
   try {
     kontenView = bacaFile(pathView);
   } catch (err) {
-    throw new Error(`[template-engine] Gagal membaca view "${pathView}": ${err.message}`);
+    if (err instanceof TemplateError) throw err;
+    throw new TemplateError(`Gagal membaca view "${pathView}"`, { file: pathView, cause: err });
   }
 
   const baseDirView      = dirname(pathView);
@@ -159,16 +160,18 @@ export function renderHalaman(pathView, data, namaLayout, dirLayouts, bacaFile =
   try {
     kontenLayout = bacaFile(pathLayout);
   } catch (err) {
-    throw new Error(
-      `[template-engine] Gagal membaca layout "${namaLayout}" (${pathLayout}): ${err.message}`,
+    if (err instanceof TemplateError) throw err;
+    throw new TemplateError(
+      `Gagal membaca layout "${namaLayout}" (${pathLayout})`,
+      { file: pathLayout, cause: err },
     );
   }
 
   // ── Pastikan slot <contents> ada ────────────────────────────
   if (!kontenLayout.includes(SLOT_KONTEN)) {
-    throw new Error(
-      `[template-engine] Layout "${namaLayout}" tidak mengandung slot ` +
-      `<contents></contents>. Tambahkan slot ini di dalam layout.`,
+    throw new TemplateError(
+      `Layout "${namaLayout}" tidak mengandung slot <contents></contents>. ` +
+      `Tambahkan slot ini di dalam layout.`,
     );
   }
 

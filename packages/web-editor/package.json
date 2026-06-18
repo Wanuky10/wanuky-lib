@@ -6,8 +6,8 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./rich-text": "./src/richTextEditor.js",
-    "./image": "./src/imageEditor.js"
+    "./rich-text": "./src/rich-text-editor.js",
+    "./image": "./src/image-editor.js"
   },
   "files": [
     "src"
@@ -22,6 +22,9 @@
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",
     "access": "restricted"
+  },
+  "scripts": {
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -5,13 +5,13 @@
  * Jalankan: node --test tests/templateEngine.test.js
  */
 
-import { test, describe } from 'node:test';
+import { test, describe } from 'vitest';
 import assert from 'node:assert/strict';
 import { writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { buatEngine, versi } from '../src/index.js';
+import { buatEngine, versi, TemplateError } from '../src/index.js';
 import { escapeHtml } from '../src/utils/escaper.js';
 import { resolveNilai } from '../src/utils/resolver.js';
 import { evaluasiEkspresi, evaluasiKondisi } from '../src/utils/expression.js';
@@ -737,7 +737,7 @@ describe('named slots: <fill> + <slot>', () => {
 // ─────────────────────────────────────────────
 
 describe('proteksi circular include', () => {
-  test('melempar error saat kedalaman include melampaui batas', () => {
+  test('melempar TemplateError saat kedalaman include melampaui batas', () => {
     const dirTemp = buatDirTemp('circular');
     writeFileSync(join(dirTemp, 'self.html'), '<include="self.html">');
 
@@ -748,7 +748,7 @@ describe('proteksi circular include', () => {
 
     assert.throws(
       () => engine.render('self.html', {}),
-      /Batas kedalaman include terlampaui/,
+      (err) => err instanceof TemplateError && /Batas kedalaman/.test(err.message),
     );
   });
 });
@@ -758,7 +758,7 @@ describe('proteksi circular include', () => {
 // ─────────────────────────────────────────────
 
 describe('file cache', () => {
-  test('ukuranCache bertambah setelah render', () => {
+  test('infoCache.jumlah bertambah setelah render', () => {
     const dirTemp = buatDirTemp('cache');
     writeFileSync(join(dirTemp, 'layouts', 'utama.html'), '<body><contents></contents></body>');
     writeFileSync(join(dirTemp, 'halaman.html'), '<p>Konten</p>');
@@ -766,7 +766,17 @@ describe('file cache', () => {
     const engine = buatEngine({ dirViews: dirTemp, dirLayouts: join(dirTemp, 'layouts') });
     engine.render('halaman.html', {}, 'utama');
 
-    assert.ok(engine.ukuranCache >= 2);
+    assert.ok(engine.infoCache.jumlah >= 2);
+  });
+
+  test('infoCache retorna objeto com jumlah e max', () => {
+    const dirTemp = buatDirTemp('info');
+    writeFileSync(join(dirTemp, 'x.html'), 'x');
+
+    const engine = buatEngine({ dirViews: dirTemp, dirLayouts: join(dirTemp, 'layouts'), cacheMaxSize: 50 });
+    const info = engine.infoCache;
+    assert.equal(typeof info.jumlah, 'number');
+    assert.equal(info.max, 50);
   });
 
   test('kosongkanCache mengosongkan cache', () => {
@@ -775,23 +785,22 @@ describe('file cache', () => {
 
     const engine = buatEngine({ dirViews: dirTemp, dirLayouts: join(dirTemp, 'layouts') });
     engine.render('snippet.html', { teks: 'tes' });
-    assert.ok(engine.ukuranCache >= 1);
+    assert.ok(engine.infoCache.jumlah >= 1);
 
     engine.kosongkanCache();
-    assert.equal(engine.ukuranCache, 0);
+    assert.equal(engine.infoCache.jumlah, 0);
   });
 
-  test('invalidasiCache menghapus satu entry — fitur baru v2.0.0', () => {
-    const dirTemp   = buatDirTemp('invalid');
-    const pathView  = join(dirTemp, 'halaman.html');
-    writeFileSync(pathView, '<p>A</p>');
+  test('hapusCache menghapus satu entri', () => {
+    const dirTemp  = buatDirTemp('hapus');
+    writeFileSync(join(dirTemp, 'halaman.html'), '<p>A</p>');
 
     const engine = buatEngine({ dirViews: dirTemp, dirLayouts: join(dirTemp, 'layouts') });
     engine.render('halaman.html', {});
-    const ukuranSebelum = engine.ukuranCache;
+    const jumlahSebelum = engine.infoCache.jumlah;
 
-    engine.invalidasiCache(pathView);
-    assert.equal(engine.ukuranCache, ukuranSebelum - 1);
+    engine.hapusCache('halaman.html');
+    assert.equal(engine.infoCache.jumlah, jumlahSebelum - 1);
   });
 });
 
@@ -844,11 +853,17 @@ describe('buatEngine — integrasi', () => {
     assert.ok(html.includes('&lt;script&gt;'));
   });
 
-  test('failure: view tidak ditemukan melempar error', () =>
-    assert.throws(() => engine.render('tidak-ada.html', {}), /Gagal membaca view/));
+  test('failure: view tidak ditemukan melempar TemplateError', () => {
+    assert.throws(() => engine.render('tidak-ada.html', {}), (err) => {
+      return err instanceof TemplateError;
+    });
+  });
 
-  test('failure: layout tidak ditemukan melempar error', () =>
-    assert.throws(() => engine.render('beranda.html', {}, 'tidak-ada'), /Gagal membaca layout/));
+  test('failure: layout tidak ditemukan melempar TemplateError', () => {
+    assert.throws(() => engine.render('beranda.html', {}, 'tidak-ada'), (err) => {
+      return err instanceof TemplateError;
+    });
+  });
 
   test('failure: slot tidak ada di layout melempar error', () => {
     writeFileSync(join(dirTemp, 'layouts', 'tanpa-slot.html'), '<html>Tanpa slot</html>');
@@ -859,6 +874,119 @@ describe('buatEngine — integrasi', () => {
     );
   });
 
-  test('failure: buatEngine tanpa konfigurasi melempar error', () =>
-    assert.throws(() => buatEngine({}), /Konfigurasi tidak lengkap/));
+  test('failure: buatEngine tanpa dirViews melempar TypeError', () =>
+    assert.throws(() => buatEngine({}), /dirViews wajib diisi/));
+
+  test('failure: buatEngine tanpa dirLayouts melempar TypeError', () =>
+    assert.throws(() => buatEngine({ dirViews: '/tmp' }), /dirLayouts wajib diisi/));
+});
+
+// ─────────────────────────────────────────────
+// TemplateError — fitur baru v2.0.0
+// ─────────────────────────────────────────────
+
+describe('TemplateError', () => {
+  test('instanceof Error dan TemplateError', () => {
+    const err = new TemplateError('pesan', { file: 'test.html', line: 5 });
+    assert.ok(err instanceof Error);
+    assert.ok(err instanceof TemplateError);
+    assert.equal(err.name, 'TemplateError');
+  });
+
+  test('menyimpan file dan line', () => {
+    const err = new TemplateError('pesan', { file: 'view.html', line: 3 });
+    assert.equal(err.file, 'view.html');
+    assert.equal(err.line, 3);
+  });
+
+  test('toString() mengandung informasi file dan baris', () => {
+    const err = new TemplateError('gagal', { file: 'view.html', line: 3 });
+    const str = err.toString();
+    assert.ok(str.includes('view.html'));
+    assert.ok(str.includes('baris 3'));
+  });
+
+  test('toString() mengandung variabelTersedia', () => {
+    const err = new TemplateError('gagal', { variabelTersedia: ['judul', 'konten'] });
+    assert.ok(err.toString().includes("'judul'"));
+    assert.ok(err.toString().includes("'konten'"));
+  });
+
+  test('cause tersimpan di error chain', () => {
+    const cause = new Error('root cause');
+    const err = new TemplateError('wrapper', { cause });
+    assert.equal(err.cause, cause);
+  });
+});
+
+// ─────────────────────────────────────────────
+// renderAsync — fitur baru v2.0.0
+// ─────────────────────────────────────────────
+
+describe('renderAsync', () => {
+  const dirTemp = buatDirTemp('async');
+  writeFileSync(join(dirTemp, 'async.html'), '<p><{ nama }></p>');
+  const engine = buatEngine({ dirViews: dirTemp, dirLayouts: join(dirTemp, 'layouts') });
+
+  test('menerima data biasa (bukan Promise)', async () => {
+    const html = await engine.renderAsync('async.html', { nama: 'Wahid' });
+    assert.ok(html.includes('Wahid'));
+  });
+
+  test('menerima Promise sebagai data — menunggu resolve', async () => {
+    const html = await engine.renderAsync(
+      'async.html',
+      Promise.resolve({ nama: 'Async' }),
+    );
+    assert.ok(html.includes('Async'));
+  });
+
+  test('mengembalikan Promise<string>', async () => {
+    const result = engine.renderAsync('async.html', { nama: 'X' });
+    assert.ok(result instanceof Promise);
+    const html = await result;
+    assert.equal(typeof html, 'string');
+  });
+});
+
+// ─────────────────────────────────────────────
+// <else> di dalam <unless> — fitur baru
+// ─────────────────────────────────────────────
+
+describe('prosesUnless dengan <else>', () => {
+  const render = (tpl, data) => renderTemplate(tpl, data, tmpdir());
+
+  test('kondisi false: tampil blok unless', () =>
+    assert.equal(render('<unless ok>KECUALI<else>SELAIN</unless>', { ok: false }), 'KECUALI'));
+
+  test('kondisi true: tampil blok else', () =>
+    assert.equal(render('<unless ok>KECUALI<else>SELAIN</unless>', { ok: true }), 'SELAIN'));
+
+  test('tanpa else — kondisi false: tampil konten', () =>
+    assert.equal(render('<unless x>YA</unless>', { x: false }), 'YA'));
+
+  test('tanpa else — kondisi true: kosong', () =>
+    assert.equal(render('<unless x>YA</unless>', { x: true }), ''));
+
+  test('nested unless dengan else tidak mengganggu induk', () => {
+    const hasil = render(
+      '<unless luar>LUAR<unless dalam>DALAM<else>BUKAN_DALAM</unless></unless>',
+      { luar: false, dalam: true },
+    );
+    assert.equal(hasil, 'LUARBUKAN_DALAM');
+  });
+
+  test('<else> di dalam <if> bersarang tidak dicuri <unless>', () => {
+    const hasil = render(
+      '<unless cond>PREFIX<if flag>YA<else>TIDAK</if>SUFFIX</unless>',
+      { cond: false, flag: false },
+    );
+    assert.equal(hasil, 'PREFIXTIDAKSUFFIX');
+  });
+
+  test('unless else dengan ekspresi perbandingan', () =>
+    assert.equal(
+      render('<unless n > 5>KECIL<else>BESAR</unless>', { n: 10 }),
+      'BESAR',
+    ));
 });

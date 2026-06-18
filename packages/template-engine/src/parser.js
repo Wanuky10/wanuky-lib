@@ -58,6 +58,7 @@ import { escapeHtml } from './utils/escaper.js';
 import { resolveNilai } from './utils/resolver.js';
 import { evaluasiEkspresi } from './utils/expression.js';
 import { applyFilters, parseFilterExpression } from './utils/filter.js';
+import { TemplateError } from './errors.js';
 
 // ─────────────────────────────────────────────────────────────
 // Konstanta regex — dikompilasi di module level
@@ -364,7 +365,8 @@ export function prosesIf(template, data, renderFn) {
 }
 
 /**
- * Memproses <unless ekspresi>...</unless> — inverse dari <if>.
+ * Memproses <unless ekspresi>...<else>...</unless>.
+ * Mendukung klausa <else> opsional — inverse semantik dari <if>.
  *
  * @param {string} template
  * @param {object} data
@@ -378,17 +380,29 @@ export function prosesUnless(template, data, renderFn) {
     const match = hasil.match(REGEX_UNLESS_BUKA);
     if (!match) break;
 
-    const idxBuka    = hasil.indexOf(match[0]);
-    const ekspresi   = match[1].trim();
+    const idxBuka     = hasil.indexOf(match[0]);
+    const ekspresi    = match[1].trim();
     const setelahBuka = idxBuka + match[0].length;
 
     const idxTutup = cariPasanganTag(hasil, setelahBuka, '<unless ', '</unless>');
     if (idxTutup === -1) break;
 
-    const konten  = hasil.slice(setelahBuka, idxTutup);
-    const rendered = !evaluasiEkspresi(ekspresi, data)
-      ? renderFn(konten, data)
-      : '';
+    const kontenBlok = hasil.slice(setelahBuka, idxTutup);
+    const idxElse   = cariElseTopLevel(kontenBlok);
+
+    let kontenJikaFalse, kontenJikaTrue;
+    if (idxElse !== -1) {
+      kontenJikaFalse = kontenBlok.slice(0, idxElse);
+      kontenJikaTrue  = kontenBlok.slice(idxElse + 6); // skip '<else>'
+    } else {
+      kontenJikaFalse = kontenBlok;
+      kontenJikaTrue  = '';
+    }
+
+    const kondisi  = evaluasiEkspresi(ekspresi, data);
+    const rendered = !kondisi
+      ? renderFn(kontenJikaFalse, data)
+      : renderFn(kontenJikaTrue, data);
 
     hasil =
       hasil.slice(0, idxBuka) +
@@ -573,9 +587,10 @@ export function prosesInclude(template, data, baseDir, renderFn, bacaFile) {
     try {
       kontenPartial = bacaFile(pathAbsolut);
     } catch (err) {
-      throw new Error(
-        `[template-engine] Gagal membaca partial "${pathPartial}" ` +
-        `(${pathAbsolut}): ${err.message}`,
+      if (err instanceof TemplateError) throw err;
+      throw new TemplateError(
+        `Gagal membaca partial "${pathPartial}" (${pathAbsolut})`,
+        { file: pathAbsolut, cause: err },
       );
     }
 
@@ -716,4 +731,44 @@ function cariKlausaIf(ekspresiAwal, kontenBlok) {
 
   klausa.push({ kondisi: kondisiSaatIni, konten: kontenBlok.slice(posisiMulai) });
   return klausa;
+}
+
+/**
+ * Cari posisi <else> di level teratas blok (tidak di dalam <if> atau <unless> bersarang).
+ * Digunakan oleh prosesUnless untuk menemukan klausa <else> miliknya sendiri.
+ *
+ * @param {string} kontenBlok
+ * @returns {number} Posisi <else>, atau -1 jika tidak ada.
+ */
+function cariElseTopLevel(kontenBlok) {
+  let kedalaman = 0;
+  let posisi    = 0;
+
+  while (posisi < kontenBlok.length) {
+    if (kontenBlok.startsWith('<if ', posisi)) {
+      kedalaman++;
+      posisi += 4;
+      continue;
+    }
+    if (kontenBlok.startsWith('<unless ', posisi)) {
+      kedalaman++;
+      posisi += 8;
+      continue;
+    }
+    if (kontenBlok.startsWith('</if>', posisi)) {
+      kedalaman = Math.max(0, kedalaman - 1);
+      posisi += 5;
+      continue;
+    }
+    if (kontenBlok.startsWith('</unless>', posisi)) {
+      kedalaman = Math.max(0, kedalaman - 1);
+      posisi += 9;
+      continue;
+    }
+    if (kedalaman === 0 && kontenBlok.startsWith('<else>', posisi)) {
+      return posisi;
+    }
+    posisi++;
+  }
+  return -1;
 }

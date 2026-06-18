@@ -24,10 +24,16 @@ Library internal untuk proyek website pribadi. Terdiri dari dua package:
    - [`<set>`](#set)
    - [Macro `<macro>` / `<call>`](#macro--call)
    - [Blok `<raw>`](#blok-raw)
-   - [Cache & Hot Reload](#cache--hot-reload)
+   - [Cache & LRU](#cache--lru)
+   - [`renderAsync`](#renderasync)
+   - [`TemplateError`](#templateerror)
 3. [WebEditor v2.0.0](#webeditor)
    - [RichTextEditor](#richtexteditor)
    - [ImageEditor](#imageeditor)
+   - [EditorError](#editorerror)
+   - [sanitasi](#sanitasi)
+   - [bacaOrientasiExif / orientasiKeTransform](#exif-reader)
+   - [FormatManager](#formatmanager)
 4. [Integrasi ke Proyek](#integrasi-ke-proyek)
 5. [Catatan Penting](#catatan-penting)
 
@@ -81,10 +87,12 @@ import { dirname, resolve } from 'path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export const engine = buatEngine({
-  dirViews:   resolve(__dirname, '../../frontend/views'),
-  dirLayouts: resolve(__dirname, '../../frontend/views/layouts'),
-  cache:      true,      // default true — false untuk development
-  hotReload:  false,     // true = auto-invalidate cache saat file berubah (development)
+  dirViews:        resolve(__dirname, '../../frontend/views'),
+  dirLayouts:      resolve(__dirname, '../../frontend/views/layouts'),
+  cache:           true,   // default true — false untuk development
+  cacheMaxSize:    200,    // jumlah maksimal file di LRU cache (default 200)
+  debug:           false,  // true = log nama view yang di-render ke stderr
+  maxIncludeDepth: 20,     // batas kedalaman include rekursif (default 20)
 });
 ```
 
@@ -109,21 +117,23 @@ Opsi `buatEngine`:
 
 | Opsi | Tipe | Default | Keterangan |
 |---|---|---|---|
-| `dirViews` | string | — | Path absolut direktori views |
-| `dirLayouts` | string | — | Path absolut direktori layouts |
+| `dirViews` | string | — | Path absolut direktori views (wajib) |
+| `dirLayouts` | string | — | Path absolut direktori layouts (wajib) |
 | `cache` | boolean | `true` | Cache file di memori |
-| `hotReload` | boolean | `false` | Auto-invalidasi cache via `fs.watch` |
+| `cacheMaxSize` | number | `200` | Kapasitas LRU cache (jumlah file) |
+| `debug` | boolean | `false` | Log nama view yang di-render ke stderr |
+| `maxIncludeDepth` | number | `20` | Batas kedalaman include rekursif |
 
 API engine yang tersedia:
 
 ```js
-engine.render('path/view.html', data, 'namaLayout');   // render dengan layout
-engine.render('path/view.html', data);                  // render tanpa layout
+engine.render('path/view.html', data, 'namaLayout');    // render dengan layout
+engine.render('path/view.html', data);                   // render tanpa layout
 engine.renderString('<p><{ nama }></p>', { nama: 'X' }); // render string langsung
-engine.kosongkanCache();                                // kosongkan semua cache
-engine.invalidasiCache('/path/absolut/file.html');      // invalidasi satu file
-engine.matikanHotReload();                              // hentikan fs.watch
-engine.ukuranCache;                                     // jumlah file di-cache
+await engine.renderAsync('path/view.html', promiseData, 'layout'); // data boleh Promise
+engine.kosongkanCache();                                 // kosongkan semua cache (LRU)
+engine.hapusCache('path/view.html');                     // hapus satu view dari cache
+engine.infoCache;                                        // { jumlah: N, max: 200 }
 ```
 
 ---
@@ -474,6 +484,38 @@ Tampilkan konten secara kondisional.
 </if>
 ```
 
+**`<unless>` dengan `<else>`:**
+
+`<unless>` mendukung cabang `<else>` untuk kondisi yang benar:
+
+```html
+<unless pengguna.login>
+  <a href="/masuk">Masuk</a>
+<else>
+  <span>Halo, <{ pengguna.nama }></span>
+</unless>
+
+<!-- Setara dengan: -->
+<if !pengguna.login>
+  <a href="/masuk">Masuk</a>
+<else>
+  <span>Halo, <{ pengguna.nama }></span>
+</if>
+```
+
+`<else>` yang bersarang di dalam `<if>` atau `<unless>` di dalam blok tidak akan dicuri oleh `<unless>` induk:
+
+```html
+<unless daftarKosong>
+  <each item in daftar>
+    <!-- <else> ini milik <if>, bukan milik <unless> -->
+    <if item.aktif>Aktif<else>Nonaktif</if>
+  </each>
+<else>
+  <p>Belum ada data.</p>
+</unless>
+```
+
 **Operator kondisi yang tersedia:**
 
 | Operator | Contoh | Keterangan |
@@ -604,32 +646,93 @@ Cegah pemrosesan template di dalam blok — berguna untuk menampilkan kode conto
 
 ---
 
-### Cache & Hot Reload
+### Cache & LRU
+
+Cache menggunakan algoritma **LRU (Least Recently Used)** — file terlama yang tidak diakses otomatis dibuang saat cache penuh.
 
 ```js
-// Cache aktif secara default
+// Cache aktif secara default (LRU 200 file)
 const engine = buatEngine({ dirViews, dirLayouts });
 
-// Development: matikan cache atau aktifkan hot reload
+// Development: matikan cache agar perubahan template langsung terlihat
 const engine = buatEngine({
   dirViews,
   dirLayouts,
-  cache:     true,
-  hotReload: true,  // fs.watch otomatis invalidasi cache saat file berubah
+  cache:        false,
 });
 
-// Invalidasi manual satu file (lebih efisien dari kosongkanCache)
-engine.invalidasiCache(resolve(dirViews, 'pages/beranda/index.html'));
+// Production dengan cache lebih besar
+const engine = buatEngine({
+  dirViews,
+  dirLayouts,
+  cache:        true,
+  cacheMaxSize: 500,
+});
 
-// Kosongkan semua cache
+// Hapus satu view dari cache (path relatif dari dirViews)
+engine.hapusCache('pages/beranda/index.html');
+
+// Kosongkan seluruh cache
 engine.kosongkanCache();
 
-// Hentikan hot reload watcher (misal saat server shutdown)
-engine.matikanHotReload();
-
-// Cek ukuran cache
-console.log(`${engine.ukuranCache} file di-cache`);
+// Cek status cache
+const { jumlah, max } = engine.infoCache;
+console.log(`${jumlah}/${max} file di-cache`);
 ```
+
+> Di v2.0.0, `hotReload` (fs.watch) dihapus. Untuk development, gunakan `cache: false` atau panggil `engine.hapusCache(namaView)` / `engine.kosongkanCache()` secara manual di middleware watch yang dikelola di level aplikasi.
+
+---
+
+### `renderAsync`
+
+`renderAsync` menerima `data` berupa `Promise` — cocok untuk controller async yang memuat data sebelum render:
+
+```js
+// Langsung pass Promise tanpa await
+const html = await engine.renderAsync(
+  'pages/produk/daftar.html',
+  ambilSemuaProduk(), // Promise<Object>
+  'utama'
+);
+
+// Setara dengan:
+const data = await ambilSemuaProduk();
+const html = engine.render('pages/produk/daftar.html', data, 'utama');
+```
+
+Jika `data` bukan Promise, `renderAsync` tetap berfungsi normal seperti `render`.
+
+---
+
+### `TemplateError`
+
+`TemplateError` dilempar engine saat terjadi kesalahan seperti file tidak ditemukan, include melebihi batas kedalaman, atau layout tidak valid. Merupakan subclass dari `Error`.
+
+```js
+import { TemplateError } from '@wanuky10/template-engine';
+
+try {
+  const html = engine.render('pages/tidak-ada.html', {}, 'utama');
+} catch (err) {
+  if (err instanceof TemplateError) {
+    console.error(err.toString());
+    // TemplateError: File tidak ditemukan: /path/ke/views/pages/tidak-ada.html
+    //   di: /path/ke/views/pages/tidak-ada.html
+  }
+}
+```
+
+Properti `TemplateError`:
+
+| Properti | Tipe | Keterangan |
+|---|---|---|
+| `message` | string | Pesan error |
+| `name` | string | Selalu `'TemplateError'` |
+| `file` | string \| undefined | Path file yang menyebabkan error |
+| `line` | number \| undefined | Nomor baris (jika tersedia) |
+| `variabelTersedia` | string[] \| undefined | Kunci data yang tersedia saat error |
+| `cause` | Error \| undefined | Error asli (error chain) |
 
 ---
 
@@ -644,6 +747,15 @@ import { RichTextEditor, ImageEditor } from '@wanuky10/web-editor';
 // Atau import terpisah (code splitting)
 import { RichTextEditor } from '@wanuky10/web-editor/rich-text';
 import { ImageEditor }    from '@wanuky10/web-editor/image';
+
+// Export tambahan v2.0.0
+import {
+  EditorError,              // custom error class
+  sanitasi,                 // HTML sanitizer
+  bacaOrientasiExif,        // baca orientasi EXIF dari File/Blob
+  orientasiKeTransform,     // konversi orientasi ke { rotate, flipH, flipV }
+  FormatManager,            // Selection API layer (untuk editor custom)
+} from '@wanuky10/web-editor';
 ```
 
 ---
@@ -1013,6 +1125,117 @@ document.querySelector('#btn-ganti-foto').addEventListener('click', () => {
 
 ---
 
+### EditorError
+
+`EditorError` dilempar oleh komponen web-editor saat terjadi kesalahan (URL tidak valid, file bukan gambar, dsb.). Merupakan subclass dari `Error`.
+
+```js
+import { EditorError } from '@wanuky10/web-editor';
+
+editor.on('error', (err) => {
+  if (err instanceof EditorError) {
+    tampilkanToast(err.message);
+  }
+});
+
+// Atau tangkap langsung
+try {
+  await editor.muatUrl(url);
+} catch (err) {
+  if (err instanceof EditorError) console.error(err.message, err.cause);
+}
+```
+
+---
+
+### `sanitasi`
+
+Fungsi `sanitasi` membersihkan HTML dari tag/atribut berbahaya (XSS). Berguna di frontend sebelum menyimpan konten atau menampilkan HTML dari sumber tidak terpercaya.
+
+```js
+import { sanitasi } from '@wanuky10/web-editor';
+
+const bersih = sanitasi(htmlKotor);
+
+// Dengan konfigurasi custom
+const bersih = sanitasi(htmlKotor, {
+  // Tag yang diizinkan (default: p, br, strong, b, em, i, u, s, del, h1-h3, ul, ol, li, blockquote, code, pre, a, img)
+  tagDiizinkan: ['p', 'br', 'strong', 'em', 'a'],
+});
+```
+
+Apa yang dibersihkan:
+- Semua event handler (`onclick`, `onerror`, dsb.)
+- Atribut `href`/`src` dengan protokol berbahaya (`javascript:`, `data:`, dsb.)
+- Tag tidak dikenal di luar `tagDiizinkan`
+- `<a target="_blank">` otomatis ditambah `rel="noopener noreferrer"`
+
+> `sanitasi` membutuhkan `DOMParser` — hanya berjalan di browser.
+
+---
+
+### EXIF Reader
+
+Baca orientasi gambar JPEG dari byte EXIF, berguna untuk mengoreksi rotasi foto dari kamera/smartphone sebelum dikirim ke server.
+
+```js
+import { bacaOrientasiExif, orientasiKeTransform } from '@wanuky10/web-editor';
+
+// Saat file dipilih dari input
+inputFile.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+
+  // Baca nilai orientasi EXIF (1–8, atau 1 jika tidak ada EXIF)
+  const orientasi = await bacaOrientasiExif(file);
+
+  // Konversi ke transform CSS/Canvas
+  const { rotate, flipH, flipV } = orientasiKeTransform(orientasi);
+  // rotate: 0 | 90 | 180 | 270
+  // flipH:  boolean
+  // flipV:  boolean
+});
+```
+
+`bacaOrientasiExif` hanya membaca 64KB pertama file untuk efisiensi.
+
+| Nilai Orientasi | rotate | flipH | flipV | Keterangan |
+|---|---|---|---|---|
+| 1 | 0 | false | false | Normal |
+| 2 | 0 | true | false | Mirror horizontal |
+| 3 | 180 | false | false | Putar 180° |
+| 4 | 180 | true | false | Mirror vertikal |
+| 5 | 90 | true | false | Putar 90° + mirror |
+| 6 | 90 | false | false | Putar 90° CW (foto portrait iPhone) |
+| 7 | 270 | true | false | Putar 270° + mirror |
+| 8 | 270 | false | false | Putar 270° CW |
+
+---
+
+### FormatManager
+
+`FormatManager` adalah layer Selection API untuk contenteditable — digunakan secara internal oleh `RichTextEditor`. Tersedia sebagai export publik jika perlu membangun editor custom.
+
+```js
+import { FormatManager } from '@wanuky10/web-editor';
+
+const fm = new FormatManager(
+  document.querySelector('#area-edit'), // elemen contenteditable
+  100,                                   // maxHistori (default 100)
+  (html) => console.log('undo/redo', html) // callback setelah undo/redo
+);
+
+fm.toggleInline('bold');            // bold/italic/underline/strikethrough/superscript/subscript
+fm.setBlok('h2');                   // heading, p, blockquote, code, dll.
+fm.insertLink('https://...', 'Teks');
+fm.insertGambar('https://...', 'Alt');
+fm.hapusFormat();                   // removeFormat
+fm.undo();
+fm.redo();
+fm.simpanSnapshot();                // simpan state ke histori manual
+```
+
+---
+
 ## Integrasi ke Proyek
 
 ### Struktur yang Direkomendasikan
@@ -1101,8 +1324,8 @@ Karakter `>` di dalam `<if>` dianggap penutup tag. Untuk "lebih dari", tukar ope
 **Include path:**
 Path di `<include="...">` selalu relatif dari **file yang sedang di-render**, bukan dari `dirViews`.
 
-**Hot reload:**
-Aktifkan `hotReload: true` di development agar perubahan template langsung terlihat tanpa restart server. Matikan di production — `fs.watch` memiliki overhead I/O.
+**Development tanpa cache:**
+Set `cache: false` di development agar perubahan template langsung terlihat tanpa restart server. Di production, biarkan `cache: true` (default) dengan LRU 200 file.
 
 **`<macro>` bersifat global per render:**
 Macro yang didefinisikan di partial yang di-include tetap tersedia di seluruh halaman dalam satu siklus render.
