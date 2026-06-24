@@ -6,6 +6,8 @@ node_modules/
 .env.*
 !.env.example
 
+.CLAUDE.md
+
 # Tarball build (opsional — hapus baris ini jika ingin commit tarball ke repo)
 dist/*.tgz
 
