@@ -31,3 +31,6 @@ packages/**/debug*.mjs
 packages/**/repro_*.mjs
 packages/**/test_*_tmp.mjs
 packages/**/verif*.mjs
+
+# Lock file sementara git index (kadang tertinggal saat proses git diinterupsi)
+.git/index.lock
