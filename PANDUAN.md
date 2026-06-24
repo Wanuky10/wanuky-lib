@@ -1,16 +1,16 @@
-# Panduan wanuky-lib v2.1.0
+# Panduan wanuky-lib
 
-Library internal untuk proyek website pribadi. Terdiri dari dua package:
+Library internal untuk proyek website pribadi. Terdiri dari dua package, masing-masing versi independen:
 
-- **`@wanuky10/template-engine`** — SSR template engine untuk Node.js (server-side)
-- **`@wanuky10/web-editor`** — RichTextEditor dan ImageEditor untuk browser (client-side)
+- **`@wanuky10/template-engine` v2.2.0** — SSR template engine untuk Node.js (server-side)
+- **`@wanuky10/web-editor` v2.1.0** — RichTextEditor dan ImageEditor untuk browser (client-side)
 
 ---
 
 ## Daftar Isi
 
 1. [Instalasi](#instalasi)
-2. [Template Engine v2.1.0](#template-engine)
+2. [Template Engine v2.2.0](#template-engine)
    - [Setup](#setup-template-engine)
    - [Interpolasi](#interpolasi)
    - [Filter](#filter)
@@ -59,7 +59,7 @@ Tambahkan ke `package.json` proyek:
 
 ```json
 "dependencies": {
-  "@wanuky10/template-engine": "2.1.0",
+  "@wanuky10/template-engine": "2.2.0",
   "@wanuky10/web-editor": "2.1.0"
 }
 ```
@@ -516,19 +516,50 @@ Tampilkan konten secara kondisional.
 </unless>
 ```
 
-**Operator kondisi yang tersedia:**
+**Operator kondisi yang tersedia (v2.2.0):**
 
 | Operator | Contoh | Keterangan |
 |---|---|---|
 | (truthy) | `<if aktif>` | Cek truthy/falsy |
 | `!` | `<if !aktif>` | Negasi |
-| `==` | `<if peran == admin>` | Sama (loose) |
-| `!=` | `<if status != tutup>` | Tidak sama |
+| `==` | `<if peran == admin>` | Sama, **loose** — type coercion (mis. `"5" == 5` → `true`) |
+| `!=` | `<if status != tutup>` | Tidak sama, loose |
+| `===` | `<if id === 5>` | Sama, **strict** — TANPA coercion (mis. `"5" === 5` → `false`) |
+| `!==` | `<if peran !== "admin">` | Tidak sama, strict |
+| `>` | `<if nilai > 80>` | Lebih dari — **wajib whitespace di kedua sisi**, lihat syarat di bawah |
 | `>=` | `<if nilai >= 80>` | Lebih dari atau sama |
+| `<` | `<if jumlah < 10>` | Kurang dari — tidak pernah ambigu |
 | `<=` | `<if stok <= 5>` | Kurang dari atau sama |
-| `<` | `<if 10 < jumlah>` | Kurang dari (tukar operan) |
 
-> `>` tidak bisa dipakai langsung karena dianggap penutup tag. Gunakan `<` dengan posisi operan ditukar, atau `>=`.
+**Pilih `===`/`!==` vs `==`/`!=`:** gunakan strict (`===`/`!==`) ketika perbedaan tipe data harus dianggap signifikan — misalnya membedakan ID numerik (`5`) dari string kosong, atau memastikan `0`/`false`/`null`/`undefined` tidak saling tertukar. Gunakan loose (`==`/`!=`) ketika sumber data tidak terjamin konsisten tipenya (mis. query string yang selalu string, tapi dibandingkan ke angka).
+
+**Operator `>` standalone — didukung native sejak v2.2.0, dengan syarat whitespace simetris:**
+
+Sebelum v2.2.0, karakter `>` tunggal di dalam tag kondisi selalu dianggap penutup tag (`<if ...>`), sehingga `<if jumlah > 10>` gagal di-parse sebagai perbandingan. Sejak v2.2.0, scanner parser bisa membedakan kedua peran ini — **selama operator `>`/`<` diapit spasi di KEDUA sisinya**:
+
+```html
+<!-- ✓ BENAR — spasi di kedua sisi operator, ditafsir sebagai operator perbandingan -->
+<if jumlah > 10>Banyak</if>
+<if nilai > 80>Lulus</if>
+
+<!-- ✗ SALAH — tanpa spasi simetris, ditafsir sebagai penutup tag, BUKAN operator -->
+<if jumlah >10>Banyak</if>     <!-- keliru: '>10' dianggap bagian penutup tag -->
+<if jumlah> 10>Banyak</if>     <!-- keliru: spasi hanya di satu sisi -->
+```
+
+`<` standalone tidak pernah ambigu (closing delimiter `<if>`/`<unless>`/`<elseif>` selalu berupa `>`, tidak pernah `<`), sehingga `<if 10 < jumlah>` maupun `<if jumlah < 10>` selalu aman ditulis tanpa syarat spasi.
+
+> **Aturan praktis:** selalu tulis operator perbandingan dengan spasi di kedua sisi (`a > b`, bukan `a>b` atau `a >b`) — ini juga konvensi gaya yang lebih mudah dibaca.
+
+**Literal angka negatif di ekspresi kondisi:**
+
+```html
+<if saldo < -1000>Saldo minus besar</if>
+<if suhu === -5>Beku</if>
+<if skor > -1 && skor < 100>Skor valid</if>
+```
+
+Literal negatif (`-5`, `-1.5`) hanya dikenali sebagai unary-negatif pada posisi operand (kiri/kanan operator atau standalone truthy-check) — tidak ada operator pengurangan biner di ekspresi kondisi. Nilai negatif yang berasal dari path data (bukan ditulis literal di template) selalu berfungsi tanpa syarat ini, karena sudah berupa `Number` saat di-resolve.
 
 ---
 
@@ -599,6 +630,41 @@ Buat variabel lokal di dalam template. Berlaku untuk scope blok saat ini dan chi
   <div class="<{ kelas }>"><{ item.nama }></div>
 </each>
 ```
+
+**Ekspresi aritmatika `+` / `-` berantai (baru di v2.2.0):**
+
+`<set>` mendukung penjumlahan/pengurangan berantai antar operand path dan/atau literal numerik:
+
+```html
+<!-- Operand path + path -->
+<set total = harga + ongkosKirim>
+
+<!-- Berantai, campur path dan literal -->
+<set totalAkhir = harga + ongkosKirim - diskon>
+<set totalDenganBiaya = subtotal + 5000 - voucher>
+
+<!-- Literal negatif di posisi awal -->
+<set penyesuaian = -5 + stokAwal>
+
+<p>Total: <{ totalAkhir | currency }></p>
+```
+
+Aturan evaluasi:
+
+| Jumlah operand | Operator | Perilaku |
+|---|---|---|
+| Satu (tunggal) | tidak ada | Delegasi langsung ke resolver — boleh nilai **non-numerik** apa pun (string, boolean, object, array). Setara `<set x = path>` biasa. |
+| Dua atau lebih | `+` / `-` saja | **Seluruh operand WAJIB numerik.** Operator `*` dan `/` **tidak didukung**. |
+
+Jika ekspresi multi-operand mengandung operand yang resolve ke nilai non-numerik atau `NaN`, engine melempar `TemplateError` eksplisit alih-alih silent-fail:
+
+```
+TemplateError: <set total>: operand "diskon" tidak menghasilkan angka
+(didapat: "GRATIS"). Ekspresi aritmatika pada <set> hanya mendukung
+operand numerik.
+```
+
+> **Kenapa harus eksplisit error, bukan fallback ke `0`/`NaN`?** Silent-fail pada ekspresi aritmatika finansial (total harga, stok, diskon) berisiko menghasilkan angka yang tampak valid tapi salah — jauh lebih berbahaya daripada error yang langsung kelihatan saat development. Pastikan operand pada ekspresi multi-term selalu berasal dari sumber yang sudah dipastikan numerik (gunakan filter `| number` di langkah sebelumnya jika sumber data tidak terjamin tipenya).
 
 ---
 
@@ -1307,19 +1373,28 @@ export async function simpanArtikel(req, res) {
 
 ### Template Engine
 
-**Operator `>` di kondisi:**
-Karakter `>` di dalam `<if>` dianggap penutup tag. Untuk "lebih dari", tukar operan dan gunakan `<` atau ganti ke `>=`:
+**Operator `>` di kondisi (revisi v2.2.0):**
+Sejak v2.2.0, `>` standalone **bisa dipakai langsung** di `<if>`/`<unless>`/`<elseif>` — parser kini memakai scanner token-aware (`cariTutupTagKondisi`) yang membedakan `>` sebagai operator perbandingan vs penutup tag. Disambiguasinya berbasis **whitespace simetris**: operator wajib diapit spasi di kedua sisi.
 
 ```html
-<!-- ✗ Tidak bisa: -->
+<!-- ✓ Berlaku sejak v2.2.0 — spasi di kedua sisi -->
 <if jumlah > 10>Banyak</if>
 
-<!-- ✓ Tukar posisi operan: -->
-<if 10 < jumlah>Banyak</if>
+<!-- ✗ Tanpa spasi simetris — salah ditafsir sebagai penutup tag -->
+<if jumlah >10>Banyak</if>
 
-<!-- ✓ Atau gunakan >= dengan nilai +1: -->
+<!-- Alternatif lama (masih valid, tidak perlu diubah jika sudah ada) -->
+<if 10 < jumlah>Banyak</if>
 <if jumlah >= 11>Banyak</if>
 ```
+
+Untuk template yang ditulis sebelum v2.2.0 menggunakan workaround tukar-operan atau `>=`, **tidak perlu migrasi** — keduanya tetap valid berdampingan dengan sintaks `>` native yang baru. Lihat detail lengkap syarat whitespace di [Kondisional `<if>` / `<unless>`](#kondisional-if--unless).
+
+**Operator `===` / `!==` (baru di v2.2.0):**
+Gunakan untuk perbandingan strict tanpa type coercion — lihat tabel operator dan rekomendasi pemilihan di bagian [Kondisional](#kondisional-if--unless).
+
+**Ekspresi aritmatika di `<set>` (baru di v2.2.0):**
+`<set total = harga + diskon - 5>` kini didukung untuk operand berantai `+`/`-`. Semua operand pada ekspresi multi-term wajib numerik, atau engine melempar `TemplateError` eksplisit. Lihat detail di [`<set>`](#set).
 
 **Include path:**
 Path di `<include="...">` selalu relatif dari **file yang sedang di-render**, bukan dari `dirViews`.
@@ -1364,4 +1439,4 @@ RichTextEditor menggunakan `execCommand` yang secara teknis deprecated di spesif
 
 ---
 
-*wanuky-lib v2.1.0 — dibuat untuk kebutuhan proyek pribadi.*
+*wanuky-lib — `@wanuky10/template-engine` v2.2.0, `@wanuky10/web-editor` v2.1.0 — dibuat untuk kebutuhan proyek pribadi.*

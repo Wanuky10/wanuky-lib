@@ -44,8 +44,8 @@ function buatDirTemp(suffix = '') {
 // ─────────────────────────────────────────────
 
 describe('versi', () => {
-  test('harus bernilai 2.0.0', () => {
-    assert.equal(versi, '2.0.0');
+  test('harus bernilai 2.2.0', () => {
+    assert.equal(versi, '2.2.0');
   });
 });
 
@@ -466,6 +466,55 @@ describe('prosesIf', () => {
 
   test('regression: <ifstuff> bukan <if>', () =>
     assert.equal(render('<ifstuff>teks</ifstuff>', {}), '<ifstuff>teks</ifstuff>'));
+
+  // ───────────────────────────────────────────
+  // Operator perbandingan standalone (>, <) tanpa '=' — regression guard Task #7.
+  // Sebelum fix: regex character-class lama tidak bisa membedakan '>' sebagai
+  // operator dari '>' sebagai closing delimiter tag, sehingga operator '>'/'<'
+  // murni (tanpa workaround '>=') selalu rusak total (tag terpotong di tengah
+  // ekspresi, sisa template bocor mentah ke output).
+  // ───────────────────────────────────────────
+  test('operator > standalone — true', () =>
+    assert.equal(render('<if usia > 17>DEWASA</if>', { usia: 20 }), 'DEWASA'));
+
+  test('operator > standalone — false', () =>
+    assert.equal(render('<if usia > 17>DEWASA</if>', { usia: 10 }), ''));
+
+  test('operator < standalone — true', () =>
+    assert.equal(render('<if usia < 17>ANAK</if>', { usia: 10 }), 'ANAK'));
+
+  test('operator < standalone — false', () =>
+    assert.equal(render('<if usia < 17>ANAK</if>', { usia: 20 }), ''));
+
+  test('operator > dikombinasikan dengan && — true', () =>
+    assert.equal(render('<if a > 5 && b > 10>YA</if>', { a: 6, b: 11 }), 'YA'));
+
+  test('operator > dikombinasikan dengan && — false (klausa kedua gagal)', () =>
+    assert.equal(render('<if a > 5 && b > 10>YA</if>', { a: 6, b: 5 }), ''));
+
+  test('nested <if> masing-masing memakai operator > standalone', () =>
+    assert.equal(
+      render('<if a > 1>LUAR<if b > 2>DALAM</if></if>', { a: 2, b: 3 }),
+      'LUARDALAM',
+    ));
+
+  test('<elseif> memakai operator > standalone', () =>
+    assert.equal(
+      render('<if a > 100>BESAR<elseif a > 10>SEDANG<else>KECIL</if>', { a: 50 }),
+      'SEDANG',
+    ));
+
+  test('regresi: operator >= tetap berfungsi setelah fix operator > standalone', () =>
+    assert.equal(render('<if usia >= 18>DEWASA</if>', { usia: 18 }), 'DEWASA'));
+
+  test('regresi: operator <= tetap berfungsi setelah fix operator > standalone', () =>
+    assert.equal(render('<if usia <= 17>ANAK</if>', { usia: 17 }), 'ANAK'));
+
+  test('konten setelah closing delimiter tidak ikut tertelan oleh scanner', () =>
+    assert.equal(
+      render('<if usia > 17>DEWASA</if>SISA_DI_LUAR_TAG', { usia: 20 }),
+      'DEWASASISA_DI_LUAR_TAG',
+    ));
 });
 
 // ─────────────────────────────────────────────
@@ -497,6 +546,15 @@ describe('prosesUnless', () => {
     );
     assert.equal(hasil, 'OK');
   });
+
+  test('operator > standalone di <unless> — kondisi true → konten tersembunyi', () =>
+    assert.equal(render('<unless usia > 17>ANAK</unless>', { usia: 20 }), ''));
+
+  test('operator > standalone di <unless> — kondisi false → konten tampil', () =>
+    assert.equal(render('<unless usia > 17>ANAK</unless>', { usia: 10 }), 'ANAK'));
+
+  test('operator < standalone di <unless>', () =>
+    assert.equal(render('<unless usia < 17>BUKAN_ANAK</unless>', { usia: 20 }), 'BUKAN_ANAK'));
 });
 
 // ─────────────────────────────────────────────
@@ -989,4 +1047,110 @@ describe('prosesUnless dengan <else>', () => {
       render('<unless n > 5>KECIL<else>BESAR</unless>', { n: 10 }),
       'BESAR',
     ));
+});
+
+// ─────────────────────────────────────────────
+// Operator perbandingan strict: === dan !== — v2.2.0
+// ─────────────────────────────────────────────
+
+describe('operator strict equality === dan !==', () => {
+  const render = (tpl, data) => renderTemplate(tpl, data, tmpdir());
+
+  test('=== true ketika tipe dan nilai sama', () =>
+    assert.equal(render('<if a === 5>YA</if>', { a: 5 }), 'YA'));
+
+  test('=== false ketika tipe berbeda meski nilai "sama" (type coercion guard)', () =>
+    assert.equal(render('<if a === 5>YA<else>TIDAK</if>', { a: '5' }), 'TIDAK'));
+
+  test('== tetap true untuk kasus yang sama (regresi: coercion masih jalan untuk ==)', () =>
+    assert.equal(render('<if a == 5>YA<else>TIDAK</if>', { a: '5' }), 'YA'));
+
+  test('!== true ketika tipe berbeda', () =>
+    assert.equal(render('<if a !== 5>BEDA<else>SAMA</if>', { a: '5' }), 'BEDA'));
+
+  test('!== false ketika tipe dan nilai sama', () =>
+    assert.equal(render('<if a !== 5>BEDA<else>SAMA</if>', { a: 5 }), 'SAMA'));
+
+  test('=== dengan string literal: true', () =>
+    assert.equal(render('<if peran === "admin">ADMIN<else>BUKAN</if>', { peran: 'admin' }), 'ADMIN'));
+
+  test('=== dengan string literal: false meski isi mirip', () =>
+    assert.equal(render('<if peran === "admin">ADMIN<else>BUKAN</if>', { peran: 'Admin' }), 'BUKAN'));
+
+  test('=== dikombinasikan dengan && tetap diparsing benar', () =>
+    assert.equal(
+      render('<if a === 1 && b === 2>YA<else>TIDAK</if>', { a: 1, b: 2 }),
+      'YA',
+    ));
+
+  test('=== dikombinasikan dengan && — salah satu gagal', () =>
+    assert.equal(
+      render('<if a === 1 && b === 2>YA<else>TIDAK</if>', { a: 1, b: 3 }),
+      'TIDAK',
+    ));
+
+  test('=== di dalam nested <if>', () =>
+    assert.equal(
+      render('<if luar>LUAR<if dalam === "x">DALAM</if></if>', { luar: true, dalam: 'x' }),
+      'LUARDALAM',
+    ));
+
+  test('=== pada <elseif>', () =>
+    assert.equal(
+      render('<if a === 1>SATU<elseif a === 2>DUA<else>LAIN</if>', { a: 2 }),
+      'DUA',
+    ));
+
+  test('!== pada <unless>', () =>
+    assert.equal(render('<unless a !== 5>SAMA<else>BEDA</unless>', { a: 5 }), 'SAMA'));
+
+  test('operator > tetap berfungsi setelah penambahan ===/!== (regresi scanner tag)', () =>
+    assert.equal(render('<if n > 5>BESAR<else>KECIL</if>', { n: 10 }), 'BESAR'));
+});
+
+// ─────────────────────────────────────────────
+// Literal angka negatif di ekspresi <if> — v2.2.0
+//
+// Bug: parsePrimary() di expression.js hanya mendeteksi awal num_lit via
+// /\d/.test(this.cur()) — karakter '-' tidak pernah tertangkap di sana,
+// sehingga jatuh ke parsePath() yang juga menolak '-' (regex /[\w.$[\]]/).
+// Akibatnya literal negatif SELALU gagal diparsing (return undefined),
+// terlepas dari posisinya (kiri/kanan operator, atau standalone truthy-check).
+// ─────────────────────────────────────────────
+
+describe('literal angka negatif di ekspresi <if>', () => {
+  const render = (tpl, data) => renderTemplate(tpl, data, tmpdir());
+
+  test('perbandingan > dengan literal negatif di kanan', () =>
+    assert.equal(render('<if a > -10>YA<else>TIDAK</if>', { a: -5 }), 'YA'));
+
+  test('perbandingan >= dengan literal negatif di kanan', () =>
+    assert.equal(render('<if a >= -5>YA<else>TIDAK</if>', { a: -5 }), 'YA'));
+
+  test('=== dengan literal negatif: true ketika nilai sama', () =>
+    assert.equal(render('<if a === -5>YA<else>TIDAK</if>', { a: -5 }), 'YA'));
+
+  test('=== dengan literal negatif: false ketika nilai beda', () =>
+    assert.equal(render('<if a === -5>YA<else>TIDAK</if>', { a: 5 }), 'TIDAK'));
+
+  test('== dengan literal negatif', () =>
+    assert.equal(render('<if a == -5>YA<else>TIDAK</if>', { a: -5 }), 'YA'));
+
+  test('literal negatif di kedua sisi operator', () =>
+    assert.equal(render('<if -5 === -5>YA<else>TIDAK</if>', {}), 'YA'));
+
+  test('literal negatif standalone sebagai truthy-check — angka bukan nol selalu truthy', () =>
+    assert.equal(render('<if -5>YA<else>TIDAK</if>', {}), 'YA'));
+
+  test('nilai negatif dari path (bukan literal) tetap berfungsi tanpa fix ini (regresi)', () =>
+    assert.equal(render('<if a < 0>NEGATIF<else>POSITIF</if>', { a: -5 }), 'NEGATIF'));
+
+  test('kombinasi literal negatif dengan && dan ===', () =>
+    assert.equal(
+      render('<if a === -1 && b === -2>YA<else>TIDAK</if>', { a: -1, b: -2 }),
+      'YA',
+    ));
+
+  test('literal negatif desimal', () =>
+    assert.equal(render('<if suhu < -1.5>BEKU<else>NORMAL</if>', { suhu: -2.7 }), 'BEKU'));
 });

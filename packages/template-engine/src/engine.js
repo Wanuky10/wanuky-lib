@@ -40,6 +40,8 @@ export function buatEngine(options = {}) {
       const cached = fileCache.get(absolutePath);
       if (cached !== undefined) return cached;
     }
+    // CATATAN: tidak ada `line` di sini secara desain — error I/O murni
+    // (file belum dibaca, jadi belum ada isi untuk dihitung barisnya).
     try {
       const isi = readFileSync(absolutePath, 'utf8');
       if (config.cache) fileCache.set(absolutePath, isi);
@@ -64,7 +66,14 @@ export function buatEngine(options = {}) {
   function rendang(namaView, data = {}, layout = null) {
     if (config.debug) process.stderr.write(`[template-engine] render: ${namaView}\n`);
     const pathAbsolut = join(config.dirViews, namaView);
-    return renderHalaman(pathAbsolut, data, layout, config.dirLayouts, bacaFile);
+    return renderHalaman(
+      pathAbsolut,
+      data,
+      layout,
+      config.dirLayouts,
+      bacaFile,
+      config.maxIncludeDepth,
+    );
   }
 
   /**
@@ -75,7 +84,10 @@ export function buatEngine(options = {}) {
    * @returns {string}
    */
   function renderString(template, data = {}) {
-    return renderTemplate(template, data, config.dirViews, { bacaFile });
+    return renderTemplate(template, data, config.dirViews, {
+      bacaFile,
+      maxIncludeDepth: config.maxIncludeDepth,
+    });
   }
 
   /**

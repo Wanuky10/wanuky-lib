@@ -1,5 +1,5 @@
 /**
- * Renderer v2.0.0
+ * Renderer v2.2.0
  *
  * Pipeline rendering per panggilan renderTemplate:
  *   1. Proteksi blok <raw>
@@ -40,8 +40,12 @@ import {
   injectFillsToSlots,
 } from './parser.js';
 
-/** Batas kedalaman include — cegah circular include */
-const BATAS_KEDALAMAN_INCLUDE = 20;
+/**
+ * Batas kedalaman include default — cegah circular include.
+ * Bisa di-override per panggilan via opsi.maxIncludeDepth, atau secara
+ * global via config.maxIncludeDepth di buatEngine() (lihat engine.js).
+ */
+const DEFAULT_MAX_INCLUDE_DEPTH = 20;
 
 /** Slot konten utama yang kompatibel dengan v1.x */
 const SLOT_KONTEN = '<contents></contents>';
@@ -66,23 +70,33 @@ export function bacaFileDefault(pathAbsolut) {
  * @param {object}   data      - Konteks data
  * @param {string}   baseDir   - Direktori basis untuk resolve include path
  * @param {object}   [opsi]
- * @param {Function} [opsi.bacaFile]  - Fungsi baca file (default: readFileSync)
- * @param {number}   [opsi.kedalaman] - Level kedalaman rekursi saat ini
+ * @param {Function} [opsi.bacaFile]        - Fungsi baca file (default: readFileSync)
+ * @param {number}   [opsi.kedalaman]       - Level kedalaman rekursi saat ini
+ * @param {number}   [opsi.maxIncludeDepth] - Batas kedalaman include (default: 20)
  * @returns {string}
  */
 export function renderTemplate(template, data, baseDir, opsi = {}) {
-  const { bacaFile = bacaFileDefault, kedalaman = 0 } = opsi;
+  const {
+    bacaFile = bacaFileDefault,
+    kedalaman = 0,
+    maxIncludeDepth = DEFAULT_MAX_INCLUDE_DEPTH,
+  } = opsi;
 
-  if (kedalaman > BATAS_KEDALAMAN_INCLUDE) {
+  // CATATAN: tidak ada `line` di sini secara desain — error ini tentang
+  // kedalaman rekursi lintas-file (circular include), bukan posisi pada
+  // satu template tertentu. `file` (baseDir level terdalam) sudah cukup
+  // sebagai titik awal investigasi.
+  if (kedalaman > maxIncludeDepth) {
     throw new TemplateError(
-      `Batas kedalaman include terlampaui (maksimum: ${BATAS_KEDALAMAN_INCLUDE} level). ` +
+      `Batas kedalaman include terlampaui (maksimum: ${maxIncludeDepth} level). ` +
       `Periksa kemungkinan circular include di ${baseDir}.`,
+      { file: baseDir },
     );
   }
 
   // Fungsi render rekursif yang diteruskan ke semua prosesor
   const renderRekursif = (tpl, ctx, dir = baseDir) =>
-    renderTemplate(tpl, ctx, dir, { bacaFile, kedalaman: kedalaman + 1 });
+    renderTemplate(tpl, ctx, dir, { bacaFile, kedalaman: kedalaman + 1, maxIncludeDepth });
 
   // ── 1. Proteksi blok <raw> ─────────────────────────────────
   const { template: tplBersih, rawBlocks } = protectRawBlocks(template);
@@ -130,14 +144,25 @@ export function renderTemplate(template, data, baseDir, opsi = {}) {
  *   4. Baca layout, inject fill ke <slot name="...">, ganti <contents>
  *   5. Render layout final dengan data
  *
- * @param {string}   pathView     - Path absolut file view
- * @param {object}   data         - Konteks data
- * @param {string}   namaLayout   - Nama layout (tanpa .html), atau null
- * @param {string}   dirLayouts   - Direktori layout
- * @param {Function} bacaFile     - Fungsi baca file
+ * @param {string}   pathView         - Path absolut file view
+ * @param {object}   data             - Konteks data
+ * @param {string}   namaLayout       - Nama layout (tanpa .html), atau null
+ * @param {string}   dirLayouts       - Direktori layout
+ * @param {Function} bacaFile         - Fungsi baca file
+ * @param {number}   [maxIncludeDepth] - Batas kedalaman include (default: 20)
  * @returns {string}
  */
-export function renderHalaman(pathView, data, namaLayout, dirLayouts, bacaFile = bacaFileDefault) {
+export function renderHalaman(
+  pathView,
+  data,
+  namaLayout,
+  dirLayouts,
+  bacaFile = bacaFileDefault,
+  maxIncludeDepth = DEFAULT_MAX_INCLUDE_DEPTH,
+) {
+  // CATATAN: tidak ada `line` di sini secara desain — ini error I/O (file
+  // tidak ditemukan/permission) yang gagal SEBELUM isi template ada untuk
+  // dihitung barisnya. `file` sudah cukup sebagai lokasi.
   let kontenView;
   try {
     kontenView = bacaFile(pathView);
@@ -147,7 +172,7 @@ export function renderHalaman(pathView, data, namaLayout, dirLayouts, bacaFile =
   }
 
   const baseDirView      = dirname(pathView);
-  const kontenViewRender = renderTemplate(kontenView, data, baseDirView, { bacaFile });
+  const kontenViewRender = renderTemplate(kontenView, data, baseDirView, { bacaFile, maxIncludeDepth });
 
   if (!namaLayout) return kontenViewRender;
 
@@ -156,6 +181,8 @@ export function renderHalaman(pathView, data, namaLayout, dirLayouts, bacaFile =
 
   // ── Baca layout ─────────────────────────────────────────────
   const pathLayout = resolve(dirLayouts, `${namaLayout}.html`);
+  // CATATAN: tidak ada `line` di sini juga — sama seperti gagal baca view,
+  // ini error I/O yang terjadi sebelum isi layout ada untuk dihitung barisnya.
   let kontenLayout;
   try {
     kontenLayout = bacaFile(pathLayout);
@@ -168,10 +195,14 @@ export function renderHalaman(pathView, data, namaLayout, dirLayouts, bacaFile =
   }
 
   // ── Pastikan slot <contents> ada ────────────────────────────
+  // CATATAN: tidak ada `line` di sini secara desain — ini adalah error
+  // "ketidakhadiran" sesuatu di seluruh file layout, bukan kesalahan pada
+  // baris tertentu yang bisa ditunjuk. `file` sudah cukup untuk lokasi.
   if (!kontenLayout.includes(SLOT_KONTEN)) {
     throw new TemplateError(
       `Layout "${namaLayout}" tidak mengandung slot <contents></contents>. ` +
       `Tambahkan slot ini di dalam layout.`,
+      { file: pathLayout },
     );
   }
 
@@ -184,5 +215,5 @@ export function renderHalaman(pathView, data, namaLayout, dirLayouts, bacaFile =
 
   // ── Render layout dengan data ────────────────────────────────
   const baseDirLayout = dirname(pathLayout);
-  return renderTemplate(layoutFinal, data, baseDirLayout, { bacaFile });
+  return renderTemplate(layoutFinal, data, baseDirLayout, { bacaFile, maxIncludeDepth });
 }

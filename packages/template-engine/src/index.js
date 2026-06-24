@@ -1,8 +1,8 @@
 /**
- * Template Engine v2.1.0 — Entry Point
+ * Template Engine v2.2.0 — Entry Point
  */
 
-export const versi = '2.1.0';
+export const versi = '2.2.0';
 
 // Public API
 export { buatEngine }    from './engine.js';

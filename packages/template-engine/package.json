@@ -1,7 +1,7 @@
 {
   "name": "@wanuky10/template-engine",
-  "version": "2.1.0",
-  "description": "Custom SSR template engine: interpolasi, filter/pipe, include partial, layout/slot, named slots, loop, if/unless/switch/with, macro/call, set, raw block, boolean expressions",
+  "version": "2.2.0",
+  "description": "Custom SSR template engine: interpolasi, filter/pipe, include partial, layout/slot, named slots, loop, if/unless/switch/with, macro/call, set (literal+aritmatika), raw block, boolean expressions (termasuk ===/!==)",
   "type": "module",
   "main": "src/index.js",
   "exports": {

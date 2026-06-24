@@ -22,3 +22,10 @@ Thumbs.db
 # Coverage & test output
 coverage/
 .nyc_output/
+
+# File debug/repro sementara — hasil sesi debugging, tidak untuk dicommit
+# Konvensi: debug1.mjs, repro_neg.mjs, test_strict_tmp.mjs, verif_gt.mjs, dst.
+packages/**/debug*.mjs
+packages/**/repro_*.mjs
+packages/**/test_*_tmp.mjs
+packages/**/verif*.mjs
