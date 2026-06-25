@@ -1,13 +1,15 @@
 {
   "name": "@wanuky10/web-editor",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Web editor library: RichTextEditor (contenteditable, toolbar modular, superscript/subscript, alignment, color picker, font size, table, paste cleanup, image upload, markdown shortcuts, event system on/off/emit, history/undo) dan ImageEditor v2.0.0 (Canvas: crop rect/circle, zoom, flip, rotate, rotasi bebas, filter via ctx.filter, preset filter, rasio aspek crop, history/undo, pinch-to-zoom, muatUrl, event system) — tanpa dependensi eksternal",
   "type": "module",
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
     "./rich-text": "./src/rich-text-editor.js",
-    "./image": "./src/image-editor.js"
+    "./image": "./src/image-editor.js",
+    "./style": "./src/web-editor.css",
+    "./style.css": "./src/web-editor.css"
   },
   "files": [
     "src"
@@ -28,5 +30,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.10.6"
   }
 }

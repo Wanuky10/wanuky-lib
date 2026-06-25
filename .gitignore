@@ -25,12 +25,31 @@ Thumbs.db
 coverage/
 .nyc_output/
 
-# File debug/repro sementara — hasil sesi debugging, tidak untuk dicommit
-# Konvensi: debug1.mjs, repro_neg.mjs, test_strict_tmp.mjs, verif_gt.mjs, dst.
+# File backup/cadangan sementara — hasil sesi edit manual, tidak untuk dicommit
+# Konvensi: foo.js.old, foo.js.old2, foo.js.old3, ..., foo.js.stale_backup, foo.js.bak
+*.old
+*.old[0-9]
+*.old[0-9][0-9]
+*.stale_backup
+*.bak
+*.orig
+*~
+
+# File debug/repro/probe sementara — hasil sesi debugging, tidak untuk dicommit
+# Konvensi: debug1.mjs, repro_neg.mjs, test_strict_tmp.mjs, verif_gt.mjs, probe_toblob_tmp.mjs, dst.
 packages/**/debug*.mjs
 packages/**/repro_*.mjs
 packages/**/test_*_tmp.mjs
 packages/**/verif*.mjs
+packages/**/probe*.mjs
+packages/**/probe*.js
+
+# Test sementara/eksperimen ad-hoc — bukan bagian test suite resmi, tidak untuk dicommit
+# Konvensi: dbg.test.js, t1.test.js, minimal.test.js, probe.test.js, probe2.test.js
+packages/**/tests/dbg.test.js
+packages/**/tests/t[0-9]*.test.js
+packages/**/tests/minimal.test.js
+packages/**/tests/probe*.test.js
 
 # Lock file sementara git index (kadang tertinggal saat proses git diinterupsi)
 .git/index.lock

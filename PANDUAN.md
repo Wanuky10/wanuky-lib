@@ -3,7 +3,7 @@
 Library internal untuk proyek website pribadi. Terdiri dari dua package, masing-masing versi independen:
 
 - **`@wanuky10/template-engine` v2.2.0** — SSR template engine untuk Node.js (server-side)
-- **`@wanuky10/web-editor` v2.1.0** — RichTextEditor dan ImageEditor untuk browser (client-side)
+- **`@wanuky10/web-editor` v2.2.0** — RichTextEditor dan ImageEditor untuk browser (client-side)
 
 ---
 
@@ -27,9 +27,10 @@ Library internal untuk proyek website pribadi. Terdiri dari dua package, masing-
    - [Cache & LRU](#cache--lru)
    - [`renderAsync`](#renderasync)
    - [`TemplateError`](#templateerror)
-3. [WebEditor v2.1.0](#webeditor)
+3. [WebEditor v2.2.0](#webeditor)
    - [RichTextEditor](#richtexteditor)
    - [ImageEditor](#imageeditor)
+   - [Watermark Brand](#watermark-brand)
    - [EditorError](#editorerror)
    - [sanitasi](#sanitasi)
    - [bacaOrientasiExif / orientasiKeTransform](#exif-reader)
@@ -60,7 +61,7 @@ Tambahkan ke `package.json` proyek:
 ```json
 "dependencies": {
   "@wanuky10/template-engine": "2.2.0",
-  "@wanuky10/web-editor": "2.1.0"
+  "@wanuky10/web-editor": "2.2.0"
 }
 ```
 
@@ -804,7 +805,7 @@ Properti `TemplateError`:
 
 ## WebEditor
 
-Package `@wanuky10/web-editor` adalah library **khusus browser** — tidak kompatibel dengan Node.js karena bergantung pada DOM API, Canvas API, File, Blob, dan FileReader.
+Package `@wanuky10/web-editor` v2.2.0 adalah library **khusus browser** — tidak kompatibel dengan Node.js karena bergantung pada DOM API, Canvas API, File, Blob, dan FileReader.
 
 ```js
 // frontend/public/js/fitur/artikel/editor.js
@@ -1191,6 +1192,132 @@ document.querySelector('#btn-ganti-foto').addEventListener('click', () => {
 
 ---
 
+### Watermark Brand
+
+Watermark (gambar dan/atau teks) yang di-burn-in otomatis ke gambar output saat `simpan()`
+dipanggil. Canvas preview yang dilihat user saat mengedit selalu bersih tanpa watermark —
+watermark hanya digambar ke kanvas output final tepat sebelum encoding blob.
+
+#### Aktivasi via Constructor
+
+```js
+import { ImageEditor } from '@wanuky10/web-editor';
+
+const editor = new ImageEditor('#kontainer-image-editor', {
+  watermark: {
+    gambar: logoFile,         // File|Blob|string URL/dataURL — opsional
+    teks: '© Wanuky 2026',    // string, maks 200 karakter — opsional
+    posisi: 'bawah-kanan',    // salah satu dari 9 preset — default 'bawah-kanan'
+    opacity: 0.6,             // 0–1 — default 0.6
+    skala: 0.18,              // 0 < skala ≤ 1, relatif lebar kanvas output — default 0.18
+    margin: 16,               // piksel dari tepi kanvas output — default 16
+    warnaTeks: '#ffffff',     // default '#ffffff', hanya berlaku untuk watermark teks
+    fontFamily: 'sans-serif', // default 'sans-serif', hanya berlaku untuk watermark teks
+  },
+});
+```
+
+Minimal salah satu dari `gambar` atau `teks` harus diisi. Jika keduanya diisi, gambar
+digambar lebih dulu lalu teks di bawahnya, sebagai satu blok yang diposisikan bersama
+sesuai `posisi`.
+
+#### 9 Posisi Preset
+
+Tersedia via `watermark.posisi` — 4 sudut, 4 tengah-sisi, 1 tengah. Tidak ada koordinat XY
+custom atau rotasi; sembilan preset ini mencakup seluruh kebutuhan praktis penempatan
+watermark brand:
+
+| Posisi | Keterangan |
+|---|---|
+| `atas-kiri` | Sudut kiri atas |
+| `atas-tengah` | Tengah-atas |
+| `atas-kanan` | Sudut kanan atas |
+| `tengah-kiri` | Tengah-kiri |
+| `tengah` | Tengah kanvas |
+| `tengah-kanan` | Tengah-kanan |
+| `bawah-kiri` | Sudut kiri bawah |
+| `bawah-tengah` | Tengah-bawah |
+| `bawah-kanan` | Sudut kanan bawah (default) |
+
+#### API Runtime: `aturWatermark()` / `hapusWatermark()`
+
+```js
+// Aktifkan/perbarui watermark setelah instansiasi — bisa dipanggil berkali-kali.
+// Pemanggilan baru menggantikan konfigurasi watermark sebelumnya SECARA PENUH
+// (bukan merge parsial dengan konfigurasi lama).
+await editor.aturWatermark({ teks: 'DRAFT', posisi: 'tengah', opacity: 0.3 });
+
+// Nonaktifkan watermark — aman dipanggil meski watermark belum pernah diaktifkan.
+// Juga membersihkan Object URL internal jika watermark sebelumnya memuat gambar
+// dari File/Blob.
+editor.hapusWatermark();
+```
+
+`aturWatermark()` mengembalikan `Promise<void>` yang resolve setelah preload gambar
+watermark (jika ada) selesai — preload berjalan asinkron dan **tidak reject** di sini
+meski gambar gagal dimuat (lihat kontrak fail-loudly di bawah).
+
+#### Kontrak Fail-Loudly pada Watermark Gambar
+
+Jika `watermark.gambar` gagal dimuat (URL invalid, network error, dll.), `simpan()` akan
+me-**reject** dengan `EditorError` dan **tidak menghasilkan blob sama sekali**. Ini desain
+sengaja: output tanpa watermark brand yang seharusnya ada (mis. lisensi, hak cipta) lebih
+berbahaya secara silent daripada error yang jelas.
+
+```js
+await editor.aturWatermark({ gambar: 'https://url-yang-tidak-valid.test/logo.png' });
+// aturWatermark() resolve di sini meski URL invalid — preload gagal secara silent dulu.
+
+try {
+  const blob = await editor.simpan(); // baru di sini reject, karena gambar watermark gagal dimuat
+} catch (err) {
+  if (err instanceof EditorError) {
+    // err.message: "Gagal memuat gambar watermark — simpan() dibatalkan agar output
+    // tidak diam-diam kehilangan watermark brand"
+    tampilkanToast(err.message);
+  }
+  // TIDAK ADA blob yang dihasilkan di percabangan ini.
+}
+```
+
+#### Contoh: Watermark Logo + Copyright pada Upload Produk
+
+```js
+import { ImageEditor } from '@wanuky10/web-editor';
+
+const editor = new ImageEditor('#editor-foto-produk', {
+  fiturPreset: 'standard',
+  formatOutput: 'jpeg',
+  watermark: {
+    gambar: '/assets/brand/logo-watermark.png',
+    teks: 'wanuky.id',
+    posisi: 'bawah-kanan',
+    opacity: 0.5,
+    skala: 0.15,
+    margin: 12,
+  },
+});
+
+editor.on('error', (err) => {
+  // Menangkap, antara lain, kegagalan watermark dari simpan()
+  tampilkanToast(err.message);
+});
+
+document.querySelector('#btn-simpan-produk').addEventListener('click', async () => {
+  try {
+    const blob = await editor.simpan();
+    const formData = new FormData();
+    formData.append('foto', blob, 'produk.jpg');
+    await fetch('/api/v1/produk/foto', { method: 'POST', body: formData });
+  } catch (err) {
+    // err instanceof EditorError — termasuk kegagalan watermark gambar
+    console.error('Simpan gagal:', err.message);
+  }
+});
+```
+
+---
+
 ### EditorError
 
 `EditorError` dilempar oleh komponen web-editor saat terjadi kesalahan (URL tidak valid, file bukan gambar, dsb.). Merupakan subclass dari `Error`.
@@ -1432,11 +1559,11 @@ Kedua editor perlu styling. Gunakan class selector berikut di `public/css/compon
 ```
 
 **CSS filter browser support:**
-`CanvasRenderingContext2D.filter` (digunakan ImageEditor v2.1.0 untuk brightness, contrast, saturasi, hue, blur, grayscale, sepia) didukung di Chrome 47+, Firefox 49+, Safari 18+. Pada browser lama, filter warna tidak berefek tetapi editor tetap berfungsi.
+`CanvasRenderingContext2D.filter` (digunakan ImageEditor v2.2.0 untuk brightness, contrast, saturasi, hue, blur, grayscale, sepia) didukung di Chrome 47+, Firefox 49+, Safari 18+. Pada browser lama, filter warna tidak berefek tetapi editor tetap berfungsi.
 
 **`document.execCommand` deprecated:**
 RichTextEditor menggunakan `execCommand` yang secara teknis deprecated di spesifikasi W3C, namun masih didukung penuh di semua browser modern. Tidak ada pengganti universal untuk contenteditable editing API.
 
 ---
 
-*wanuky-lib — `@wanuky10/template-engine` v2.2.0, `@wanuky10/web-editor` v2.1.0 — dibuat untuk kebutuhan proyek pribadi.*
+*wanuky-lib — `@wanuky10/template-engine` v2.2.0, `@wanuky10/web-editor` v2.2.0 — dibuat untuk kebutuhan proyek pribadi.*

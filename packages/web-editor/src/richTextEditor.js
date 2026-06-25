@@ -27,6 +27,14 @@
  *   new RichTextEditor('#editor', { onUbah: ({ html }) => save(html) });
  */
 
+import {
+  lucutiEventHandler,
+  isProtokolBerbahaya,
+  amankanTargetBlank,
+  filterStyle,
+} from './sanitizer-core.js';
+import { EditorError } from './errors.js';
+
 // ─────────────────────────────────────────────────────────────
 // Konstanta & konfigurasi
 // ─────────────────────────────────────────────────────────────
@@ -165,8 +173,26 @@ const MARKDOWN_SHORTCUTS = [
 // Utilitas private
 // ─────────────────────────────────────────────────────────────
 
+const STYLE_DIIZINKAN = /^(color|background-color|text-align|font-size)\s*:/i;
+
 /**
  * Sanitasi HTML — whitelist tag + atribut, cegah XSS.
+ *
+ * @adr Primitif event-handler-stripping, deteksi protokol javascript, dan
+ *     rel=noopener diimpor dari sanitizer-core.js
+ *     (shared dengan sanitizer.js's sanitasi() publik). Whitelist tag/atribut
+ *     dan kebijakan URL (data: diizinkan untuk <img>, blacklist javascript:
+ *     bukan whitelist protokol) TETAP privat ke modul ini — lihat ADR lengkap
+ *     di header sanitizer-core.js.
+ * @context Sebelum refactor ini, fungsi ini TIDAK eksplisit melucuti atribut
+ *     on* — keamanannya bergantung sepenuhnya pada ATRIBUT_DIIZINKAN tidak
+ *     pernah mendaftarkan atribut berawalan "on" untuk tag apa pun ("aman by
+ *     omission"). Itu rapuh: siapa pun yang menambah entry baru ke
+ *     ATRIBUT_DIIZINKAN di masa depan bisa tidak sadar risiko ini.
+ * @decision Tambahkan lucutiEventHandler() sebagai pass eksplisit pertama,
+ *     sebelum whitelist atribut per-tag diterapkan — defense-in-depth, bukan
+ *     hanya kosmetik.
+ *
  * @param {string} html
  * @returns {string}
  */
@@ -186,6 +212,10 @@ function sanitasiHtml(html) {
       return;
     }
 
+    // Selalu lucuti event handler terlebih dahulu — tidak bergantung pada
+    // ATRIBUT_DIIZINKAN tidak pernah mendaftarkan on* (lihat ADR di atas).
+    lucutiEventHandler(node);
+
     const izin = ATRIBUT_DIIZINKAN[tag] ?? [];
     for (const attr of Array.from(node.attributes ?? [])) {
       if (!izin.includes(attr.name)) {
@@ -195,16 +225,15 @@ function sanitasiHtml(html) {
 
     if (tag === 'a') {
       const href = node.getAttribute('href') ?? '';
-      if (/^\s*javascript:/i.test(href)) node.removeAttribute('href');
-      if (node.getAttribute('target') === '_blank') {
-        node.setAttribute('rel', 'noopener noreferrer');
-      }
+      if (isProtokolBerbahaya(href)) node.removeAttribute('href');
+      amankanTargetBlank(node);
     }
 
     if (tag === 'img') {
       const src = node.getAttribute('src') ?? '';
-      // Izinkan data URL base64 untuk gambar yang diupload
-      if (!/^\s*javascript:/i.test(src)) {
+      // Izinkan data URL base64 untuk gambar yang diupload — hanya blokir
+      // javascript:, BUKAN whitelist protokol (beda sengaja dari sanitizer.js).
+      if (!isProtokolBerbahaya(src)) {
         node.setAttribute('loading', 'lazy');
       } else {
         node.removeAttribute('src');
@@ -213,12 +242,7 @@ function sanitasiHtml(html) {
 
     // Bersihkan style attribute — hanya izinkan properti tertentu
     if (node.hasAttribute('style')) {
-      const gaya = node.getAttribute('style');
-      const gayaBersih = gaya
-        .split(';')
-        .map((s) => s.trim())
-        .filter((s) => /^(color|background-color|text-align|font-size)\s*:/i.test(s))
-        .join('; ');
+      const gayaBersih = filterStyle(node.getAttribute('style'), STYLE_DIIZINKAN);
       gayaBersih ? node.setAttribute('style', gayaBersih) : node.removeAttribute('style');
     }
 
@@ -330,7 +354,7 @@ export class RichTextEditor {
   constructor(selektor, opsi = {}) {
     const kontainer =
       typeof selektor === 'string' ? document.querySelector(selektor) : selektor;
-    if (!kontainer) throw new Error(`[RichTextEditor] Elemen tidak ditemukan: "${selektor}"`);
+    if (!kontainer) throw new EditorError(`[RichTextEditor] Elemen tidak ditemukan: "${selektor}"`);
 
     this._opsi = {
       toolbar:         null,

@@ -1,0 +1,630 @@
+/**
+ * @wanuky10/web-editor — stylesheet bawaan untuk RichTextEditor & ImageEditor.
+ *
+ * @module @wanuky10/web-editor/style
+ * @version 2.2.0
+ *
+ * @adr     Satu file CSS terpisah, diekspor via package.json "exports", bukan
+ *          di-inject otomatis lewat JS (createElement('style')/Shadow DOM)
+ * @context Komponen ini dipakai di aplikasi consumer yang sudah punya sistem
+ *          CSS sendiri (lihat konvensi wanuky-stack: variables.css → base.css
+ *          → core/*.css). Inject otomatis akan: (1) membuat consumer tidak
+ *          bisa override lewat cascade biasa tanpa !important, (2) duplikasi
+ *          <style> tag bila ada >1 instance editor di halaman yang sama,
+ *          (3) menyulitkan tree-shaking/critical-CSS tooling consumer.
+ * @decision Konsumen meng-import file ini secara eksplisit
+ *           (`@wanuky10/web-editor/style` lewat package.json exports, atau
+ *           taruh isi/​copy file ini sebagai
+ *           frontend/public/css/core/webEditor.css sesuai konvensi
+ *           wanuky-stack) dan dimuat hanya pada halaman yang benar-benar
+ *           memakai editor — selaras dengan komentar "dimuat hanya bila
+ *           dibutuhkan" di peta struktur direktori wanuky-stack.
+ * @tradeoff Consumer wajib satu langkah manual (import/link CSS) — tidak
+ *           "otomatis menyala". Ini disengaja: predictable > convenient.
+ * @alternatives Shadow DOM + adoptedStyleSheets (ditolak: mempersulit
+ *               consumer mengustomisasi warna/ukuran via CSS variable
+ *               sendiri, sedangkan salah satu tujuan utama variabel di bawah
+ *               adalah agar mudah di-override dari :root milik consumer).
+ *
+ * @adr     Semua warna/ukuran/spacing memakai CSS custom properties dengan
+ *          fallback value, bukan hardcoded literal
+ * @context Aplikasi consumer (wanuky-stack) punya variables.css sendiri
+ *          sebagai satu sumber kebenaran tema (warna brand, spacing scale).
+ * @decision Variabel didefinisikan dengan prefix --wie-* (ImageEditor) dan
+ *          --wrte-* (RichTextEditor), masing-masing punya fallback literal
+ *          di var(--token, fallback) — sehingga file ini tetap tampil benar
+ *          stand-alone TANPA variables.css consumer, tapi otomatis ikut tema
+ *          begitu consumer mendefinisikan ulang token bernama sama di :root.
+ * @tradeoff Sedikit lebih verbose dibanding literal langsung.
+ * @alternatives Hardcode warna (ditolak: tidak bisa di-theme tanpa override
+ *               !important per selector).
+ */
+
+/* ============================================================
+   ImageEditor (.wanuky-ie)
+   ============================================================ */
+
+.wanuky-ie {
+  --wie-warna-bg:           var(--color-surface, #1a1a1a);
+  --wie-warna-bg-toolbar:   var(--color-surface-alt, #242424);
+  --wie-warna-border:       var(--color-border, #3a3a3a);
+  --wie-warna-teks:         var(--color-text, #e8e8e8);
+  --wie-warna-teks-muted:   var(--color-text-muted, #9a9a9a);
+  --wie-warna-aksen:        var(--color-primary, #4d8dff);
+  --wie-warna-aksen-teks:   var(--color-primary-contrast, #ffffff);
+  --wie-warna-btn-hover:    var(--color-surface-hover, #2f2f2f);
+  --wie-radius:             var(--radius-md, 6px);
+  --wie-radius-sm:          var(--radius-sm, 4px);
+  --wie-spasi:              var(--space-2, 8px);
+  --wie-spasi-sm:           var(--space-1, 4px);
+  --wie-font:               var(--font-sans, system-ui, -apple-system, 'Segoe UI', sans-serif);
+  --wie-transisi:           var(--transition-fast, 120ms ease);
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wie-spasi);
+  width: 100%;
+  max-width: 100%;
+  font-family: var(--wie-font);
+  color: var(--wie-warna-teks);
+  background: var(--wie-warna-bg);
+  border: 1px solid var(--wie-warna-border);
+  border-radius: var(--wie-radius);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.wanuky-ie *,
+.wanuky-ie *::before,
+.wanuky-ie *::after {
+  box-sizing: border-box;
+}
+
+.wanuky-ie--drag-over {
+  outline: 2px dashed var(--wie-warna-aksen);
+  outline-offset: -4px;
+}
+
+/* ── Toolbar ──────────────────────────────────────────────── */
+
+.wanuky-ie__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--wie-spasi-sm);
+  padding: var(--wie-spasi-sm) var(--wie-spasi);
+  background: var(--wie-warna-bg-toolbar);
+  border-bottom: 1px solid var(--wie-warna-border);
+}
+
+.wanuky-ie__sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 var(--wie-spasi-sm);
+  background: var(--wie-warna-border);
+  flex-shrink: 0;
+}
+
+.wanuky-ie__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 var(--wie-spasi-sm);
+  font-size: 14px;
+  line-height: 1;
+  color: var(--wie-warna-teks);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--wie-radius-sm);
+  cursor: pointer;
+  transition: background var(--wie-transisi), border-color var(--wie-transisi);
+}
+
+.wanuky-ie__btn:hover:not(:disabled) {
+  background: var(--wie-warna-btn-hover);
+}
+
+.wanuky-ie__btn:focus-visible {
+  outline: 2px solid var(--wie-warna-aksen);
+  outline-offset: 1px;
+}
+
+.wanuky-ie__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.wanuky-ie__btn--aktif {
+  background: var(--wie-warna-aksen);
+  color: var(--wie-warna-aksen-teks);
+  border-color: var(--wie-warna-aksen);
+}
+
+.wanuky-ie__btn--reset-filter {
+  width: 100%;
+  margin-top: var(--wie-spasi-sm);
+  font-size: 13px;
+}
+
+/* ── Tool kustom (dropdown/panel) ────────────────────────────── */
+
+.wanuky-ie__tool-khusus {
+  position: relative;
+  display: inline-flex;
+}
+
+/*
+ * .wanuky-ie__tool-khusus--{rotasiSudut|preset|aspekRasio} (lihat
+ * imageEditor.js _buatToolKhusus(), classname dinamis dari nama item) —
+ * sama seperti panel--filter/--rotasi di atas: extension point per-tool,
+ * tidak ada override default.
+ */
+.wanuky-ie__tool-khusus--rotasiSudut,
+.wanuky-ie__tool-khusus--preset,
+.wanuky-ie__tool-khusus--aspekRasio {
+  /* override khusus per-tool diletakkan di sini oleh consumer bila perlu */
+}
+
+.wanuky-ie__dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+  padding: var(--wie-spasi-sm);
+  background: var(--wie-warna-bg-toolbar);
+  border: 1px solid var(--wie-warna-border);
+  border-radius: var(--wie-radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.wanuky-ie__dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 6px var(--wie-spasi);
+  text-align: left;
+  font-size: 13px;
+  color: var(--wie-warna-teks);
+  background: transparent;
+  border: none;
+  border-radius: var(--wie-radius-sm);
+  cursor: pointer;
+}
+
+.wanuky-ie__dropdown-item:hover {
+  background: var(--wie-warna-btn-hover);
+}
+
+/* ── Panel filter & rotasi ────────────────────────────────────── */
+
+.wanuky-ie__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wie-spasi-sm);
+  padding: var(--wie-spasi);
+  background: var(--wie-warna-bg-toolbar);
+  border-bottom: 1px solid var(--wie-warna-border);
+}
+
+/*
+ * .wanuky-ie__panel--filter dan .wanuky-ie__panel--rotasi adalah modifier
+ * BEM yang di-set bersamaan dengan .wanuky-ie__panel di className elemen
+ * yang sama (lihat imageEditor.js baris 484 & 491). Tidak ada override
+ * style di sini secara default — keduanya tampil identik mengikuti aturan
+ * .wanuky-ie__panel di atas. Selector kosong ini sengaja didefinisikan
+ * sebagai extension point eksplisit: consumer aplikasi (wanuky-stack) bisa
+ * menambah aturan khusus salah satu panel (mis. lebar berbeda untuk panel
+ * rotasi yang hanya berisi satu slider) tanpa perlu menambah class baru
+ * lewat JS.
+ */
+.wanuky-ie__panel--filter,
+.wanuky-ie__panel--rotasi {
+  /* override khusus per-panel diletakkan di sini oleh consumer bila perlu */
+}
+
+.wanuky-ie__slider-baris {
+  display: grid;
+  grid-template-columns: 90px 36px 1fr;
+  align-items: center;
+  gap: var(--wie-spasi-sm);
+}
+
+.wanuky-ie__slider-label {
+  font-size: 12px;
+  color: var(--wie-warna-teks-muted);
+}
+
+.wanuky-ie__slider-nilai {
+  font-size: 12px;
+  text-align: right;
+  color: var(--wie-warna-teks-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.wanuky-ie__slider {
+  width: 100%;
+  accent-color: var(--wie-warna-aksen);
+}
+
+/* ── Canvas & drop area ───────────────────────────────────────── */
+
+.wanuky-ie__canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  touch-action: none;
+  cursor: default;
+}
+
+.wanuky-ie__canvas[hidden] {
+  display: none;
+}
+
+.wanuky-ie__drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--wie-spasi-sm);
+  min-height: 200px;
+  padding: calc(var(--wie-spasi) * 3);
+  color: var(--wie-warna-teks-muted);
+  border: 2px dashed var(--wie-warna-border);
+  border-radius: var(--wie-radius);
+  margin: var(--wie-spasi);
+  cursor: pointer;
+  transition: border-color var(--wie-transisi), color var(--wie-transisi);
+}
+
+.wanuky-ie__drop:hover,
+.wanuky-ie__drop:focus-visible {
+  border-color: var(--wie-warna-aksen);
+  color: var(--wie-warna-teks);
+}
+
+.wanuky-ie__drop[hidden] {
+  display: none;
+}
+
+.wanuky-ie__drop-ikon {
+  font-size: 32px;
+}
+
+.wanuky-ie__drop-teks {
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ============================================================
+   RichTextEditor (.wanuky-rte)
+   ============================================================ */
+
+.wanuky-rte {
+  --wrte-warna-bg:         var(--color-surface, #ffffff);
+  --wrte-warna-bg-toolbar: var(--color-surface-alt, #f5f5f5);
+  --wrte-warna-border:     var(--color-border, #d8d8d8);
+  --wrte-warna-teks:       var(--color-text, #1f1f1f);
+  --wrte-warna-teks-muted: var(--color-text-muted, #767676);
+  --wrte-warna-aksen:      var(--color-primary, #2563eb);
+  --wrte-warna-aksen-teks: var(--color-primary-contrast, #ffffff);
+  --wrte-warna-btn-hover:  var(--color-surface-hover, #e9e9e9);
+  --wrte-warna-bahaya:     var(--color-danger, #dc2626);
+  --wrte-radius:           var(--radius-md, 6px);
+  --wrte-radius-sm:        var(--radius-sm, 4px);
+  --wrte-spasi:            var(--space-2, 8px);
+  --wrte-spasi-sm:         var(--space-1, 4px);
+  --wrte-font:             var(--font-sans, system-ui, -apple-system, 'Segoe UI', sans-serif);
+  --wrte-transisi:         var(--transition-fast, 120ms ease);
+
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  font-family: var(--wrte-font);
+  color: var(--wrte-warna-teks);
+  background: var(--wrte-warna-bg);
+  border: 1px solid var(--wrte-warna-border);
+  border-radius: var(--wrte-radius);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.wanuky-rte *,
+.wanuky-rte *::before,
+.wanuky-rte *::after {
+  box-sizing: border-box;
+}
+
+.wanuky-rte--readonly .wanuky-rte__toolbar {
+  display: none;
+}
+
+.wanuky-rte--readonly .wanuky-rte__area {
+  background: var(--wrte-warna-bg-toolbar);
+}
+
+/* ── Toolbar ──────────────────────────────────────────────── */
+
+.wanuky-rte__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: var(--wrte-spasi-sm) var(--wrte-spasi);
+  background: var(--wrte-warna-bg-toolbar);
+  border-bottom: 1px solid var(--wrte-warna-border);
+}
+
+.wanuky-rte__pemisah {
+  width: 1px;
+  height: 20px;
+  margin: 0 var(--wrte-spasi-sm);
+  background: var(--wrte-warna-border);
+  flex-shrink: 0;
+}
+
+.wanuky-rte__tombol {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  font-size: 13px;
+  color: var(--wrte-warna-teks);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--wrte-radius-sm);
+  cursor: pointer;
+  transition: background var(--wrte-transisi);
+}
+
+.wanuky-rte__tombol:hover:not(:disabled) {
+  background: var(--wrte-warna-btn-hover);
+}
+
+.wanuky-rte__tombol:focus-visible {
+  outline: 2px solid var(--wrte-warna-aksen);
+  outline-offset: 1px;
+}
+
+.wanuky-rte__tombol--aktif {
+  background: var(--wrte-warna-aksen);
+  color: var(--wrte-warna-aksen-teks);
+}
+
+.wanuky-rte__tombol--dropdown {
+  gap: 4px;
+  padding-right: 4px;
+}
+
+.wanuky-rte__tombol__ikon {
+  pointer-events: none;
+}
+
+.wanuky-rte__tombol__panah {
+  font-size: 9px;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.wanuky-rte__tombol__warna-aktif {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+/* ── Dropdown (ukuran font, warna) ───────────────────────────── */
+
+.wanuky-rte__dropdown {
+  position: relative;
+  display: inline-flex;
+}
+
+.wanuky-rte__dropdown__panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  padding: var(--wrte-spasi-sm);
+  background: var(--wrte-warna-bg);
+  border: 1px solid var(--wrte-warna-border);
+  border-radius: var(--wrte-radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.wanuky-rte__dropdown__opsi {
+  display: block;
+  width: 100%;
+  padding: 6px var(--wrte-spasi);
+  text-align: left;
+  font-size: 13px;
+  white-space: nowrap;
+  color: var(--wrte-warna-teks);
+  background: transparent;
+  border: none;
+  border-radius: var(--wrte-radius-sm);
+  cursor: pointer;
+}
+
+.wanuky-rte__dropdown__opsi:hover {
+  background: var(--wrte-warna-btn-hover);
+}
+
+.wanuky-rte__dropdown__panel--warna {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  min-width: 168px;
+}
+
+.wanuky-rte__swatch {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--wrte-warna-border);
+  border-radius: var(--wrte-radius-sm);
+  cursor: pointer;
+  padding: 0;
+}
+
+.wanuky-rte__swatch:hover {
+  outline: 2px solid var(--wrte-warna-aksen);
+  outline-offset: 1px;
+}
+
+.wanuky-rte__dropdown__panel--ukuran {
+  min-width: 100px;
+}
+
+/* ── Area edit & counter ─────────────────────────────────────── */
+
+.wanuky-rte__area {
+  flex: 1;
+  min-height: 160px;
+  padding: var(--wrte-spasi) calc(var(--wrte-spasi) * 1.5);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--wrte-warna-teks);
+  background: var(--wrte-warna-bg);
+  outline: none;
+  overflow-y: auto;
+}
+
+.wanuky-rte__area:empty::before {
+  content: attr(data-placeholder);
+  color: var(--wrte-warna-teks-muted);
+  pointer-events: none;
+}
+
+.wanuky-rte__area table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: var(--wrte-spasi) 0;
+}
+
+.wanuky-rte__area table td,
+.wanuky-rte__area table th {
+  border: 1px solid var(--wrte-warna-border);
+  padding: 6px 8px;
+}
+
+.wanuky-rte__area img {
+  max-width: 100%;
+  height: auto;
+}
+
+.wanuky-rte__counter {
+  padding: var(--wrte-spasi-sm) calc(var(--wrte-spasi) * 1.5);
+  font-size: 11px;
+  text-align: right;
+  color: var(--wrte-warna-teks-muted);
+  background: var(--wrte-warna-bg-toolbar);
+  border-top: 1px solid var(--wrte-warna-border);
+}
+
+.wanuky-rte__counter--hampir-penuh {
+  color: var(--color-warning, #d97706);
+}
+
+.wanuky-rte__counter--penuh {
+  color: var(--wrte-warna-bahaya);
+  font-weight: 600;
+}
+
+/* ── Modal (link/gambar/tabel) ───────────────────────────────── */
+
+.wanuky-rte__modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.wanuky-rte__modal[hidden] {
+  display: none;
+}
+
+.wanuky-rte__modal > div {
+  width: min(360px, 90vw);
+  padding: calc(var(--wrte-spasi) * 2);
+  background: var(--wrte-warna-bg);
+  border-radius: var(--wrte-radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.wanuky-rte__modal__judul {
+  margin: 0 0 var(--wrte-spasi) 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.wanuky-rte__modal__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: var(--wrte-spasi);
+}
+
+.wanuky-rte__modal__field label {
+  font-size: 12px;
+  color: var(--wrte-warna-teks-muted);
+}
+
+.wanuky-rte__modal__input {
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--wrte-warna-teks);
+  background: var(--wrte-warna-bg);
+  border: 1px solid var(--wrte-warna-border);
+  border-radius: var(--wrte-radius-sm);
+}
+
+.wanuky-rte__modal__input:focus-visible {
+  outline: 2px solid var(--wrte-warna-aksen);
+  outline-offset: 1px;
+}
+
+.wanuky-rte__modal__aksi {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--wrte-spasi-sm);
+  margin-top: calc(var(--wrte-spasi) * 1.5);
+}
+
+.wanuky-rte__modal__tombol {
+  padding: 8px 16px;
+  font-size: 13px;
+  border-radius: var(--wrte-radius-sm);
+  cursor: pointer;
+  border: 1px solid var(--wrte-warna-border);
+  background: var(--wrte-warna-bg);
+  color: var(--wrte-warna-teks);
+}
+
+.wanuky-rte__modal__batal {
+  background: transparent;
+}
+
+.wanuky-rte__modal__terapkan {
+  background: var(--wrte-warna-aksen);
+  color: var(--wrte-warna-aksen-teks);
+  border-color: var(--wrte-warna-aksen);
+}
+
+.wanuky-rte__modal__terapkan:hover,
+.wanuky-rte__modal__batal:hover,
+.wanuky-rte__modal__tombol:hover {
+  filter: brightness(0.95);
+}

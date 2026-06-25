@@ -2,7 +2,14 @@
  * Sanitasi HTML untuk output RichTextEditor.
  * Berjalan di browser environment — menggunakan DOM parser native.
  * Tidak bisa dipakai di Node.js tanpa jsdom/happy-dom.
+ *
+ * @adr Primitif event-handler-stripping & rel=noopener diimpor dari sanitizer-core.js (shared dengan
+ *     richTextEditor.js's sanitasiHtml() privat). Lihat ADR lengkap di header
+ *     sanitizer-core.js untuk alasan kenapa whitelist tag/atribut & strategi
+ *     validasi URL TIDAK diunifikasi — dua modul ini punya threat model yang
+ *     berbeda secara sengaja.
  */
+import { lucutiEventHandler, isProtokolDiizinkan, amankanTargetBlank } from './sanitizer-core.js';
 
 const TAG_DEFAULT = new Set([
   'p', 'br', 'strong', 'b', 'em', 'i', 'u', 's', 'del',
@@ -22,9 +29,24 @@ const PROTOKOL_AMAN = /^(https?:|mailto:|tel:)/i;
  * @typedef {Object} SanitasiOptions
  * @property {boolean}  [aktif=true]
  * @property {string[]} [tagDiizinkan]     - Override daftar tag yang diizinkan
- * @property {string[]} [atributDiizinkan] - Override daftar atribut global
  * @property {boolean}  [paksakanHttps=true]
  */
+// @adr Opsi `atributDiizinkan` dihapus dari typedef ini (V2.2.0).
+// @context Opsi ini terdaftar di JSDoc sejak versi sebelumnya tapi tidak
+//   pernah dibaca oleh bersihkanNode() — fungsi tersebut hanya menerima
+//   tagDiizinkan & paksakanHttps, dan selalu fallback ke ATRIBUT_AMAN
+//   hardcoded. Ini API yang mengklaim mendukung sesuatu yang sebenarnya
+//   tidak pernah diimplementasi — berisiko menyesatkan konsumen yang
+//   membaca typedef dan mengasumsikan override ini berfungsi.
+// @decision Hapus dari dokumentasi alih-alih mengimplementasikannya secara
+//   diam-diam. Tidak ada pemanggil internal yang memakai opsi ini (diverifikasi
+//   via grep `atributDiizinkan` — hanya muncul di typedef ini sebelum
+//   perubahan ini), dan karena `sanitasi()` hanya dipanggil secara internal
+//   dalam monorepo ini saat ini (lihat catatan "internal-only" di README),
+//   menghapusnya bukan breaking change bagi konsumen yang ada.
+// @tradeoff Jika kelak dibutuhkan override atribut per-tag, opsi ini harus
+//   diimplementasikan ulang dengan benar (dibaca di bersihkanNode(), bukan
+//   sekadar didokumentasikan) — bukan dikembalikan begitu saja ke typedef.
 
 /**
  * Sanitasi HTML string — hapus tag, atribut, dan URL berbahaya.
@@ -60,33 +82,25 @@ function bersihkanNode(node, tagDiizinkan, paksakanHttps) {
       const tagName = anak.tagName.toLowerCase();
 
       if (!tagDiizinkan.has(tagName)) {
-        // Hapus tag tapi pertahankan konten teks di dalamnya
         anak.replaceWith(...anak.childNodes);
         continue;
       }
 
-      // Bersihkan atribut
+      lucutiEventHandler(anak);
+
       const atribSah        = ATRIBUT_AMAN[tagName] ?? ATRIBUT_AMAN['*'];
       const atribUntukHapus = [];
 
       for (const attr of anak.attributes) {
         const namaAttr = attr.name.toLowerCase();
 
-        // Selalu hapus event handler (on*)
-        if (namaAttr.startsWith('on')) {
-          atribUntukHapus.push(attr.name);
-          continue;
-        }
-
         if (!atribSah.has(namaAttr)) {
           atribUntukHapus.push(attr.name);
           continue;
         }
 
-        // Validasi URL di href dan src
         if ((namaAttr === 'href' || namaAttr === 'src') && paksakanHttps) {
-          const nilai = attr.value.trim().toLowerCase();
-          if (!PROTOKOL_AMAN.test(nilai)) {
+          if (!isProtokolDiizinkan(attr.value, PROTOKOL_AMAN)) {
             atribUntukHapus.push(attr.name);
           }
         }
@@ -96,15 +110,12 @@ function bersihkanNode(node, tagDiizinkan, paksakanHttps) {
         anak.removeAttribute(nama);
       }
 
-      // Tambahkan rel="noopener noreferrer" ke semua link yang target="_blank"
-      if (tagName === 'a' && anak.getAttribute('target') === '_blank') {
-        anak.setAttribute('rel', 'noopener noreferrer');
+      if (tagName === 'a') {
+        amankanTargetBlank(anak);
       }
 
-      // Rekursif ke children
       bersihkanNode(anak, tagDiizinkan, paksakanHttps);
     } else {
-      // Hapus comment, processing instruction, dll.
       anak.remove();
     }
   }

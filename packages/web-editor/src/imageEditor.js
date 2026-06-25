@@ -1,13 +1,13 @@
 /**
- * ImageEditor v2.0.0
+ * ImageEditor v2.2.0
  *
  * Editor gambar berbasis Canvas API untuk browser.
  * Mendukung: rotasi, flip, zoom, crop (rect/circle), filter warna,
  * preset filter, rasio aspek crop, history/undo, event system,
- * pinch-to-zoom, dan rotasi bebas.
+ * pinch-to-zoom, rotasi bebas, dan auto-rotate EXIF saat upload JPEG.
  *
  * @module @wanuky10/web-editor/imageEditor
- * @version 2.0.0
+ * @version 2.2.0
  * @license MIT
  *
  * @adr     Menggunakan CanvasRenderingContext2D.filter (CSS filter) untuk semua filter warna
@@ -18,14 +18,65 @@
  *           filter warna tidak akan berpengaruh namun editor tetap berfungsi
  * @alternatives Pixel manipulation (ditolak: O(n) per pixel, tidak bisa blur/hue secara efisien),
  *               WebGL (ditolak: kompleksitas tinggi untuk scope ini)
+ *
+ * @adr     Auto-rotate EXIF hanya dijalankan di jalur muatFile(), tidak di muatUrl()
+ * @context Browser modern men-decode <img> sesuai orientasi EXIF (image-orientation: from-image
+ *          adalah default sejak Chrome 81/Firefox 26), TAPI Canvas drawImage() menggambar piksel
+ *          mentah tanpa menghormati EXIF — hasil bisa miring 90/180/270° dari foto kamera/HP.
+ *          muatFile() menerima File mentah sehingga byte EXIF bisa dibaca langsung;
+ *          muatUrl() hanya menerima string (data URL/object URL/URL biasa) yang sudah tidak
+ *          membawa File asli untuk dibaca ulang byte-nya secara efisien.
+ * @decision bacaOrientasiExif(file) dipanggil di muatFile() sebelum FileReader; hasil transform
+ *           (rotate/flipH/flipV) dioper ke _muatDariSrc() sebagai parameter kedua (transformAwal),
+ *           diterapkan SETELAH _resetSemua() (agar tidak ditimpa) tapi SEBELUM
+ *           _sesuaikanUkuranKanvas() (karena rotasi mempengaruhi perhitungan dimensi kanvas)
+ * @tradeoff muatUrl() tidak mendapat auto-rotate — pemanggil yang load dari URL eksternal
+ *           bertanggung jawab memastikan orientasi sudah benar di sumbernya
+ * @alternatives Re-fetch blob dari URL lalu parse EXIF (ditolak: butuh network round-trip
+ *               tambahan untuk URL remote, tidak konsisten utk data URL yg sudah di-decode)
+ *
+ * @adr     Watermark brand hanya di-burn-in saat _simpanGambar(), tidak pernah di _render()
+ * @context Tiga opsi dipertimbangkan: (a) watermark ikut tampil di preview kanvas hidup,
+ *          (b) watermark hanya muncul di hasil akhir (Blob/DataURL), (c) keduanya bisa
+ *          dipilih lewat opsi. User memutuskan (b): preview editing harus tetap bersih
+ *          tanpa watermark — watermark adalah properti OUTPUT, bukan properti EDITING.
+ * @decision _terapkanWatermark() dipanggil eksklusif di dalam _simpanGambar(), digambar di
+ *           atas clone/offscreen canvas dari hasil render final (setelah resize ukuranMaks
+ *           jika ada) — TIDAK PERNAH menyentuh this._canvas (kanvas preview utama) maupun
+ *           dipanggil dari _render(). Gambar watermark (jika sumbernya File/Blob/URL)
+ *           di-preload & di-cache sebagai HTMLImageElement saat opsi/aturWatermark() di-set,
+ *           BUKAN saat simpan() dipanggil — supaya simpan() tidak perlu menunggu network/IO
+ *           setiap kali dipanggil, cukup menunggu promise preload yang mungkin sudah selesai.
+ * @tradeoff Konsumen yang ingin "preview WYSIWYG dengan watermark" harus merender sendiri di
+ *           luar editor (mis. overlay HTML/CSS di atas kanvas) — di luar scope library ini.
+ * @alternatives Watermark sebagai layer overlay permanen di _render() (ditolak: mengubah
+ *               kontrak visual "preview = bahan mentah editing", dan harus diduplikasi
+ *               logic-nya di setiap titik re-render termasuk saat crop/undo/filter berubah)
+ *
+ * @adr     Gambar watermark yang gagal dimuat membuat simpan() reject, tidak fallback diam-diam
+ * @context Saat sumber watermark adalah File/Blob/URL, loading-nya async dan bisa gagal
+ *          (404, file korup, MIME bukan image). Dua pilihan: fail loudly (reject) atau
+ *          fallback toleran (tetap hasilkan blob tanpa watermark + emit 'error' sebagai info).
+ * @decision Pilih fail loudly: jika watermark gambar gagal dimuat, simpan() me-reject
+ *           EditorError dan TIDAK menghasilkan Blob sama sekali. Mencegah skenario silent
+ *           di mana konsumen mengira watermark brand terpasang padahal hilang dari output
+ *           yang sudah ter-publish/ter-distribusi.
+ * @tradeoff Konsumen wajib menangani rejection simpan() secara eksplisit (try/catch atau
+ *           .catch()) jika memakai watermark gambar — tidak ada output "lebih baik dari
+ *           tidak ada" yang dipaksakan oleh library.
+ * @alternatives Fallback tanpa watermark + emit('error') (ditolak: berisiko brand watermark
+ *               hilang tanpa konsumen sadar jika listener 'error' tidak dipasang)
  */
+
+import { bacaOrientasiExif, orientasiKeTransform } from './exif-reader.js';
+import { EditorError } from './errors.js';
 
 // ─────────────────────────────────────────────────────────────
 // Konstanta
 // ─────────────────────────────────────────────────────────────
 
 /** Versi library. */
-const VERSI = '2.0.0';
+const VERSI = '2.2.0';
 
 /** Nilai step zoom per satu aksi. */
 const FAKTOR_ZOOM_LANGKAH = 0.15;
@@ -43,6 +94,29 @@ const BATAS_HISTORY = 20;
 
 /** Lebar handle drag crop dalam piksel. */
 const UKURAN_HANDLE = 10;
+
+/**
+ * Sembilan posisi preset watermark: 4 sudut, 4 tengah-sisi, 1 tengah.
+ * Dipakai oleh _hitungPosisiWatermark() untuk menentukan titik anchor
+ * (x, y) dan textAlign/textBaseline saat menggambar watermark teks/gambar.
+ */
+const POSISI_WATERMARK_VALID = new Set([
+  'atas-kiri', 'atas-tengah', 'atas-kanan',
+  'tengah-kiri', 'tengah', 'tengah-kanan',
+  'bawah-kiri', 'bawah-tengah', 'bawah-kanan',
+]);
+
+/** Nilai default untuk opsi watermark — dipakai sebagai fallback per-field. */
+const WATERMARK_DEFAULT = {
+  teks:    null,   // string|null
+  gambar:  null,   // File|Blob|string(URL/dataURL)|null
+  posisi:  'bawah-kanan',
+  opacity: 0.6,     // 0–1
+  skala:   0.18,    // 0–1, persentase lebar kanvas output final
+  margin:  16,      // piksel, relatif kanvas output final
+  warnaTeks: '#ffffff',
+  fontFamily: 'sans-serif',
+};
 
 /**
  * Definisi setiap tool yang tersedia.
@@ -165,9 +239,28 @@ export class ImageEditor {
    * @param {'jpeg'|'png'|'webp'} [opsi.formatOutput='jpeg'] - Format output
    * @param {number}      [opsi.kualitasOutput=0.92] - Kualitas kompresi (0–1)
    * @param {{lebar:number,tinggi:number}} [opsi.ukuranMaks] - Ukuran output maksimum
+   * @param {object}      [opsi.watermark]      - Konfigurasi watermark brand (lihat ADR
+   *        "Watermark brand hanya di-burn-in saat _simpanGambar()" di header file).
+   *        Hanya diterapkan ke hasil simpan()/getDataUrl(), TIDAK PERNAH ke preview kanvas.
+   * @param {string}      [opsi.watermark.teks]       - Teks watermark (opsional)
+   * @param {File|Blob|string} [opsi.watermark.gambar] - Logo watermark: File/Blob/URL/dataURL (opsional)
+   * @param {'atas-kiri'|'atas-tengah'|'atas-kanan'|'tengah-kiri'|'tengah'|'tengah-kanan'|
+   *         'bawah-kiri'|'bawah-tengah'|'bawah-kanan'} [opsi.watermark.posisi='bawah-kanan']
+   * @param {number}      [opsi.watermark.opacity=0.6] - Transparansi watermark (0–1)
+   * @param {number}      [opsi.watermark.skala=0.18]  - Lebar watermark relatif lebar kanvas output (0–1)
+   * @param {number}      [opsi.watermark.margin=16]   - Jarak watermark dari tepi kanvas output (piksel)
+   * @param {string}      [opsi.watermark.warnaTeks='#ffffff'] - Warna teks watermark (CSS color)
+   * @param {string}      [opsi.watermark.fontFamily='sans-serif'] - Font teks watermark
+   * @throws {EditorError} Jika kontainer tidak valid, atau opsi.watermark tidak valid
+   *         (lihat _validasiOpsiWatermark()).
    */
   constructor(kontainer, opsi = {}) {
-    this._kontainer  = kontainer;
+    const el = typeof kontainer === 'string' ? document.querySelector(kontainer) : kontainer;
+    if (!(el instanceof HTMLElement)) {
+      throw new EditorError(`[ImageEditor] Elemen kontainer tidak ditemukan atau tidak valid: "${kontainer}"`);
+    }
+
+    this._kontainer  = el;
     this._opsi       = {
       fiturPreset:    'full',
       bentukCrop:     'rect',
@@ -220,6 +313,38 @@ export class ImageEditor {
     this._history     = [];
     this._historyIdx  = -1;
 
+    /**
+     * @adr     Tracking object URL berbasis Set, disinkronkan dengan lifecycle _history
+     * @context terapkanCrop() membuat object URL baru via URL.createObjectURL() setiap
+     *          dipanggil, dan history menyimpan gambarSrc PER ENTRY (bukan satu nilai
+     *          global) — undo() bisa kembali ke entry mana pun yang masih menyimpan
+     *          object URL miliknya. Revoke yang naif (satu variabel global) akan
+     *          merusak entry history lain yang masih valid untuk di-undo.
+     * @decision Setiap object URL yang dibuat library ini dicatat di _objectUrlDibuat
+     *           (Set). Saat _simpanHistory() membuang entry lama (slice branch-cut atau
+     *           shift saat BATAS_HISTORY terlampaui), object URL milik entry yang
+     *           terbuang langsung di-revoke via _revokeObjectUrlEntry(). Sisa object URL
+     *           yang masih tertinggal di _history saat hancurkan() dipanggil ikut direvoke.
+     * @tradeoff Sedikit overhead bookkeeping (satu Set + loop kecil per _simpanHistory),
+     *           namun mencegah memory leak object URL yang menumpuk pada sesi crop berulang
+     * @alternatives Single _objectUrlAktif (ditolak: history multi-entry membuat revoke
+     *               salah sasaran), revoke segera setiap selesai _muatDariSrc (ditolak:
+     *               akan merusak entry history yang masih merujuk URL tersebut untuk undo)
+     */
+    this._objectUrlDibuat = new Set();
+
+    /**
+     * Status watermark brand. null = watermark tidak aktif (default).
+     * Bentuk saat aktif: { ...WATERMARK_DEFAULT, ...opsiUser, _gambarEl, _gambarPromise, _objectUrlWatermark }
+     * - _gambarEl           : HTMLImageElement hasil preload (null sebelum/jika gagal)
+     * - _gambarPromise      : Promise<void> yang resolve saat preload selesai (dipakai _simpanGambar untuk await)
+     * - _objectUrlWatermark : string|null — object URL yang dibuat library ini dari File/Blob watermark,
+     *                         dilacak terpisah dari this._objectUrlDibuat (siklus hidupnya independen dari
+     *                         object URL gambar utama/history) agar bisa di-revoke spesifik saat watermark
+     *                         diganti/dihapus tanpa mengganggu tracker history gambar utama.
+     */
+    this._watermark = null;
+
     // Event system
     this._listeners   = new Map([
       ['muat',    new Set()],
@@ -233,6 +358,10 @@ export class ImageEditor {
 
     this._bangunUI();
     this._pasangEventListener();
+
+    // Watermark dari constructor opts — dijalankan setelah UI siap karena
+    // aturWatermark() bisa emit('error') yang sebaiknya sudah punya listener terpasang.
+    if (this._opsi.watermark) this.aturWatermark(this._opsi.watermark);
   }
 
   // ─── Event system ──────────────────────────────────────────────
@@ -279,8 +408,11 @@ export class ImageEditor {
    * Slider hanya menyimpan pada event pointerup.
    */
   _simpanHistory() {
-    // Potong branch ke depan jika ada
+    // Potong branch ke depan jika ada — revoke object URL milik entry yang dibuang,
+    // KECUALI yang masih sama dengan gambarSrc aktif (mis. dipakai ulang via undo lalu redo manual)
+    const dibuangBranch = this._history.slice(this._historyIdx + 1);
     this._history = this._history.slice(0, this._historyIdx + 1);
+    for (const entry of dibuangBranch) this._revokeObjectUrlEntry(entry);
 
     const state = {
       rotasi:     this._rotasi,
@@ -304,9 +436,27 @@ export class ImageEditor {
     this._historyGambar = null;
 
     this._history.push(state);
-    if (this._history.length > BATAS_HISTORY) this._history.shift();
+    // Saat history melampaui batas, entry tertua dibuang — revoke object URL miliknya
+    if (this._history.length > BATAS_HISTORY) {
+      const dibuangLama = this._history.shift();
+      this._revokeObjectUrlEntry(dibuangLama);
+    }
     this._historyIdx = this._history.length - 1;
     this._updateTombolUndo();
+  }
+
+  /**
+   * Revoke object URL milik satu entry history, jika entry tersebut memang
+   * pernah membuat object URL (gambarSrc berupa blob: URL yang tercatat di
+   * _objectUrlDibuat) DAN object URL tersebut bukan gambarSrc yang sedang aktif dipakai.
+   * @param {object|undefined} entry
+   */
+  _revokeObjectUrlEntry(entry) {
+    const src = entry?.gambarSrc;
+    if (!src || !this._objectUrlDibuat.has(src)) return;
+    if (src === this._gambarSrc) return; // masih dipakai sebagai gambar aktif — jangan revoke
+    URL.revokeObjectURL(src);
+    this._objectUrlDibuat.delete(src);
   }
 
   /**
@@ -1462,21 +1612,53 @@ export class ImageEditor {
 
   /**
    * Muat gambar dari objek File.
+   * Untuk file JPEG, orientasi EXIF dibaca lebih dulu dan diterapkan otomatis
+   * (lihat ADR "Auto-rotate EXIF" di header file) agar foto dari kamera/HP yang
+   * disimpan dengan flag rotasi EXIF tidak tampil miring di kanvas.
+   *
    * @param {File} file
+   * @returns {Promise<void>}
    */
-  muatFile(file) {
+  async muatFile(file) {
     if (!file?.type.startsWith('image/')) {
-      this.emit('error', new Error('File bukan gambar yang valid'));
+      this.emit('error', new EditorError('File bukan gambar yang valid'));
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const src = e.target.result;
-      this._muatDariSrc(src);
-    };
-    reader.onerror = () => this.emit('error', new Error('Gagal membaca file'));
-    reader.readAsDataURL(file);
+    let transformAwal = {};
+    if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
+      try {
+        const orientasi = await bacaOrientasiExif(file);
+        transformAwal = orientasiKeTransform(orientasi);
+      } catch {
+        // Gagal baca EXIF (file korup/terpotong) — lanjut tanpa auto-rotate
+        transformAwal = {};
+      }
+    }
+
+    let dataUrl;
+    try {
+      dataUrl = await this._bacaFileSebagaiDataUrl(file);
+    } catch {
+      this.emit('error', new EditorError('Gagal membaca file'));
+      return;
+    }
+
+    return this._muatDariSrc(dataUrl, transformAwal);
+  }
+
+  /**
+   * Baca File sebagai data URL.
+   * @param {File} file
+   * @returns {Promise<string>}
+   */
+  _bacaFileSebagaiDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = (e) => resolve(e.target.result);
+      reader.onerror = () => reject(new EditorError('Gagal membaca file'));
+      reader.readAsDataURL(file);
+    });
   }
 
   /**
@@ -1488,8 +1670,16 @@ export class ImageEditor {
     return this._muatDariSrc(url);
   }
 
-  /** Internal: muat gambar dari string src. */
-  _muatDariSrc(src) {
+  /**
+   * Internal: muat gambar dari string src.
+   * @param {string} src
+   * @param {{rotate?: number, flipH?: boolean, flipV?: boolean}} [transformAwal={}]
+   *        Transform awal yang diterapkan setelah reset state tapi sebelum kanvas
+   *        di-resize — dipakai jalur EXIF auto-rotate dari muatFile(). Lihat ADR
+   *        "Auto-rotate EXIF" di header file untuk alasan urutan ini.
+   * @returns {Promise<void>}
+   */
+  _muatDariSrc(src, transformAwal = {}) {
     return new Promise((resolve, reject) => {
       const img    = new Image();
       img.crossOrigin = 'anonymous';
@@ -1497,6 +1687,9 @@ export class ImageEditor {
         this._gambar    = img;
         this._gambarSrc = src;
         this._resetSemua();
+        if (transformAwal.rotate)  this._rotasi = ((transformAwal.rotate % 360) + 360) % 360;
+        if (transformAwal.flipH)   this._flipH  = true;
+        if (transformAwal.flipV)   this._flipV  = true;
         this._sesuaikanUkuranKanvas();
         this._history    = [];
         this._historyIdx = -1;
@@ -1508,7 +1701,7 @@ export class ImageEditor {
         resolve();
       };
       img.onerror = () => {
-        const err = new Error(`Gagal memuat gambar dari src`);
+        const err = new EditorError(`Gagal memuat gambar dari src`);
         this.emit('error', err);
         reject(err);
       };
@@ -1548,7 +1741,8 @@ export class ImageEditor {
     offscreen.toBlob((blob) => {
       if (!blob) return;
       const newSrc = URL.createObjectURL(blob);
-      // Marconi sebelum muat: gambarSrc untuk history
+      this._objectUrlDibuat.add(newSrc);
+      // Tandai gambarSrc baru agar tersimpan di entry history berikutnya
       this._historyGambar = newSrc;
       this._simpanHistory();
       this._muatDariSrc(newSrc).then(() => {
@@ -1566,37 +1760,311 @@ export class ImageEditor {
     }, 'image/png');
   }
 
+  // ─── Watermark brand ──────────────────────────────────────────
+  //
+  // Lihat ADR "Watermark brand hanya di-burn-in saat _simpanGambar()" dan
+  // ADR "Gambar watermark yang gagal dimuat membuat simpan() reject" di header file
+  // untuk konteks keputusan arsitektur watermark secara keseluruhan.
+
+  /**
+   * Validasi field-field opsi watermark. Melempar EditorError jika ada
+   * field dengan tipe/rentang nilai yang tidak valid — dijalankan SEBELUM
+   * preloading gambar dimulai agar kesalahan konfigurasi terdeteksi sedini
+   * mungkin (fail-fast), bukan baru terlihat saat simpan() dipanggil.
+   *
+   * @param {object} opsiWatermark
+   * @throws {EditorError}
+   */
+  _validasiOpsiWatermark(opsiWatermark) {
+    const o = opsiWatermark;
+
+    if (o.teks == null && o.gambar == null) {
+      throw new EditorError(
+        '[ImageEditor] watermark butuh minimal salah satu dari "teks" atau "gambar"',
+      );
+    }
+    if (o.teks != null && typeof o.teks !== 'string') {
+      throw new EditorError('[ImageEditor] watermark.teks harus berupa string');
+    }
+    if (o.teks != null && o.teks.length > 200) {
+      throw new EditorError('[ImageEditor] watermark.teks terlalu panjang (maks 200 karakter)');
+    }
+    if (
+      o.gambar != null &&
+      !(o.gambar instanceof File) &&
+      !(o.gambar instanceof Blob) &&
+      typeof o.gambar !== 'string'
+    ) {
+      throw new EditorError('[ImageEditor] watermark.gambar harus File, Blob, atau string URL/dataURL');
+    }
+    if (o.posisi != null && !POSISI_WATERMARK_VALID.has(o.posisi)) {
+      throw new EditorError(
+        `[ImageEditor] watermark.posisi tidak valid: "${o.posisi}". ` +
+        `Pilihan: ${[...POSISI_WATERMARK_VALID].join(', ')}`,
+      );
+    }
+    if (o.opacity != null && (typeof o.opacity !== 'number' || o.opacity < 0 || o.opacity > 1)) {
+      throw new EditorError('[ImageEditor] watermark.opacity harus angka 0–1');
+    }
+    if (o.skala != null && (typeof o.skala !== 'number' || o.skala <= 0 || o.skala > 1)) {
+      throw new EditorError('[ImageEditor] watermark.skala harus angka >0 dan ≤1');
+    }
+    if (o.margin != null && (typeof o.margin !== 'number' || o.margin < 0)) {
+      throw new EditorError('[ImageEditor] watermark.margin harus angka ≥0');
+    }
+  }
+
+  /**
+   * Aktifkan atau perbarui konfigurasi watermark brand secara runtime.
+   * Bisa dipanggil berkali-kali (mis. mengganti logo atau posisi setelah
+   * instansiasi) — pemanggilan baru menggantikan konfigurasi watermark
+   * sebelumnya secara penuh (bukan merge parsial).
+   *
+   * Jika watermark sebelumnya memuat gambar dari File/Blob (sehingga membuat
+   * Object URL internal), URL tersebut di-revoke sebelum konfigurasi baru
+   * diproses — mencegah kebocoran memori saat watermark diganti berkali-kali.
+   *
+   * @param {object} opsiWatermark - Lihat JSDoc opsi.watermark di constructor.
+   * @returns {Promise<void>} Resolve saat preload gambar watermark (jika ada) selesai.
+   *          Jika preload gagal, promise tetap resolve (TIDAK reject di sini) — kegagalan
+   *          baru menyebabkan reject saat simpan() dipanggil (lihat ADR terkait).
+   * @throws {EditorError} Sinkron, jika opsiWatermark tidak valid (lihat _validasiOpsiWatermark).
+   */
+  aturWatermark(opsiWatermark) {
+    if (!opsiWatermark || typeof opsiWatermark !== 'object') {
+      throw new EditorError('[ImageEditor] aturWatermark() butuh objek opsi watermark');
+    }
+    this._validasiOpsiWatermark(opsiWatermark);
+
+    // Revoke object URL watermark sebelumnya (jika ada) — watermark baru menggantikan total.
+    this._revokeObjectUrlWatermark();
+
+    const cfg = { ...WATERMARK_DEFAULT, ...opsiWatermark };
+
+    const state = {
+      ...cfg,
+      _gambarEl: null,
+      _gambarPromise: null,
+      _objectUrlWatermark: null,
+    };
+
+    if (cfg.gambar != null) {
+      state._gambarPromise = this._preloadGambarWatermark(cfg.gambar, state);
+    } else {
+      state._gambarPromise = Promise.resolve();
+    }
+
+    this._watermark = state;
+    return state._gambarPromise;
+  }
+
+  /**
+   * Nonaktifkan watermark dan bersihkan resource terkait (Object URL, cache gambar).
+   * Aman dipanggil meski watermark belum pernah diaktifkan.
+   */
+  hapusWatermark() {
+    this._revokeObjectUrlWatermark();
+    this._watermark = null;
+  }
+
+  /** Revoke object URL watermark aktif (jika ada) dan bersihkan referensinya. */
+  _revokeObjectUrlWatermark() {
+    if (this._watermark?._objectUrlWatermark) {
+      URL.revokeObjectURL(this._watermark._objectUrlWatermark);
+      this._watermark._objectUrlWatermark = null;
+    }
+  }
+
+  /**
+   * Preload gambar watermark menjadi HTMLImageElement, di-cache di state.
+   * Jika sumber adalah File/Blob, dibuatkan Object URL yang dilacak di
+   * state._objectUrlWatermark (lihat dokumentasi this._watermark di constructor).
+   *
+   * @param {File|Blob|string} sumber
+   * @param {object} state - Objek state watermark (this._watermark calon/aktif) yang dimutasi in-place.
+   * @returns {Promise<void>} Selalu resolve — kegagalan dicatat via state._gambarGagal,
+   *          dibaca ulang oleh _terapkanWatermark() untuk memutuskan reject simpan().
+   */
+  _preloadGambarWatermark(sumber, state) {
+    return new Promise((resolve) => {
+      let src;
+      if (sumber instanceof File || sumber instanceof Blob) {
+        src = URL.createObjectURL(sumber);
+        state._objectUrlWatermark = src;
+      } else {
+        src = sumber;
+      }
+
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        state._gambarEl    = img;
+        state._gambarGagal = false;
+        resolve();
+      };
+      img.onerror = () => {
+        state._gambarEl    = null;
+        state._gambarGagal = true;
+        resolve();
+      };
+      img.src = src;
+    });
+  }
+
+  /**
+   * Hitung titik anchor (x, y) serta textAlign untuk posisi preset watermark,
+   * relatif terhadap kanvas berukuran (W, H) dan elemen watermark berukuran (w, h),
+   * dengan jarak `margin` piksel dari tepi terdekat.
+   *
+   * @param {string} posisi - salah satu dari POSISI_WATERMARK_VALID
+   * @param {number} W - lebar kanvas target
+   * @param {number} H - tinggi kanvas target
+   * @param {number} w - lebar elemen watermark (gambar atau bounding box teks)
+   * @param {number} h - tinggi elemen watermark
+   * @param {number} margin
+   * @returns {{x: number, y: number}} Koordinat sudut kiri-atas elemen watermark di kanvas.
+   */
+  _hitungPosisiWatermark(posisi, W, H, w, h, margin) {
+    const kiri   = margin;
+    const kanan  = W - w - margin;
+    const tengahX = (W - w) / 2;
+    const atas   = margin;
+    const bawah  = H - h - margin;
+    const tengahY = (H - h) / 2;
+
+    const PETA = {
+      'atas-kiri':     { x: kiri,   y: atas   },
+      'atas-tengah':   { x: tengahX, y: atas   },
+      'atas-kanan':    { x: kanan,  y: atas   },
+      'tengah-kiri':   { x: kiri,   y: tengahY },
+      'tengah':        { x: tengahX, y: tengahY },
+      'tengah-kanan':  { x: kanan,  y: tengahY },
+      'bawah-kiri':    { x: kiri,   y: bawah  },
+      'bawah-tengah':  { x: tengahX, y: bawah  },
+      'bawah-kanan':   { x: kanan,  y: bawah  },
+    };
+
+    return PETA[posisi] ?? PETA['bawah-kanan'];
+  }
+
+  /**
+   * Gambar watermark (gambar dan/atau teks) ke atas context canvas yang diberikan.
+   * Dipanggil HANYA oleh _simpanGambar() — lihat ADR di header file. ctx diasumsikan
+   * milik kanvas output final (sudah melalui resize ukuranMaks jika ada), BUKAN kanvas
+   * preview (this._canvas).
+   *
+   * Jika watermark berisi gambar DAN teks, keduanya digambar dengan anchor posisi yang
+   * sama (ditumpuk vertikal: gambar di atas, teks di bawahnya) — kombinasi paling umum
+   * untuk watermark brand (logo + nama brand).
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {number} W - lebar kanvas output final
+   * @param {number} H - tinggi kanvas output final
+   * @throws {EditorError} Jika watermark gambar gagal dimuat (lihat ADR terkait).
+   */
+  _gambarWatermarkKeCanvas(ctx, W, H) {
+    const wm = this._watermark;
+    if (!wm) return;
+
+    if (wm.gambar != null && wm._gambarGagal) {
+      throw new EditorError(
+        '[ImageEditor] Gagal memuat gambar watermark — simpan() dibatalkan agar output ' +
+        'tidak diam-diam kehilangan watermark brand',
+      );
+    }
+
+    const lebarTarget = Math.max(1, Math.round(W * wm.skala));
+    const margin       = wm.margin;
+
+    // Hitung tinggi total blok watermark (gambar + teks bila kombinasi) untuk
+    // menentukan anchor Y yang benar pada posisi yang melibatkan "tengah" vertikal.
+    let tinggiGambar = 0;
+    let lebarGambar  = 0;
+    if (wm._gambarEl) {
+      const rasio  = wm._gambarEl.naturalHeight / wm._gambarEl.naturalWidth;
+      lebarGambar  = lebarTarget;
+      tinggiGambar = Math.round(lebarTarget * rasio);
+    }
+
+    const ukuranFont = Math.max(10, Math.round(lebarTarget * 0.22));
+    const spasiVertikal = wm._gambarEl && wm.teks ? Math.round(ukuranFont * 0.35) : 0;
+
+    ctx.save();
+    ctx.font         = `${ukuranFont}px ${wm.fontFamily}`;
+    const lebarTeks  = wm.teks ? ctx.measureText(wm.teks).width : 0;
+    const lebarBlok  = Math.max(lebarGambar, lebarTeks);
+    const tinggiBlok = tinggiGambar + spasiVertikal + (wm.teks ? ukuranFont : 0);
+
+    const { x, y } = this._hitungPosisiWatermark(wm.posisi, W, H, lebarBlok, tinggiBlok, margin);
+
+    ctx.globalAlpha = wm.opacity;
+
+    let kursorY = y;
+    if (wm._gambarEl) {
+      const offsetX = x + (lebarBlok - lebarGambar) / 2;
+      ctx.drawImage(wm._gambarEl, offsetX, kursorY, lebarGambar, tinggiGambar);
+      kursorY += tinggiGambar + spasiVertikal;
+    }
+
+    if (wm.teks) {
+      ctx.fillStyle    = wm.warnaTeks;
+      ctx.textAlign    = 'left';
+      ctx.textBaseline = 'top';
+      const offsetX = x + (lebarBlok - lebarTeks) / 2;
+      ctx.fillText(wm.teks, offsetX, kursorY);
+    }
+
+    ctx.restore();
+  }
+
   /**
    * Simpan gambar ke Blob dan emit event 'selesai'.
    * @returns {Promise<Blob>}
    */
-  _simpanGambar() {
+  async _simpanGambar() {
+    if (!this._gambar) {
+      throw new EditorError('Belum ada gambar yang dimuat');
+    }
+
+    // Tunggu preload gambar watermark (jika ada) selesai SEBELUM menggambar apa pun,
+    // supaya _gambarWatermarkKeCanvas() bisa membaca state._gambarGagal yang final.
+    if (this._watermark?._gambarPromise) {
+      await this._watermark._gambarPromise;
+    }
+
+    let kanvasFinal = this._canvas;
+
+    // Jika ada ukuranMaks output, resize
+    if (this._opsi.ukuranMaks) {
+      const { lebar: mL, tinggi: mT } = this._opsi.ukuranMaks;
+      const skala = Math.min(mL / this._canvas.width, mT / this._canvas.height, 1);
+      if (skala < 1) {
+        const tmp    = document.createElement('canvas');
+        tmp.width    = Math.round(this._canvas.width  * skala);
+        tmp.height   = Math.round(this._canvas.height * skala);
+        const tmpCtx = tmp.getContext('2d');
+        tmpCtx.drawImage(this._canvas, 0, 0, tmp.width, tmp.height);
+        kanvasFinal = tmp;
+      }
+    }
+
+    // Watermark digambar di atas KLON kanvas final, bukan this._canvas —
+    // lihat ADR "Watermark brand hanya di-burn-in saat _simpanGambar()".
+    if (this._watermark) {
+      const klon    = document.createElement('canvas');
+      klon.width    = kanvasFinal.width;
+      klon.height   = kanvasFinal.height;
+      const klonCtx = klon.getContext('2d');
+      klonCtx.drawImage(kanvasFinal, 0, 0);
+      this._gambarWatermarkKeCanvas(klonCtx, klon.width, klon.height);
+      kanvasFinal = klon;
+    }
+
+    const mime = `image/${this._opsi.formatOutput}`;
     return new Promise((resolve, reject) => {
-      if (!this._gambar) {
-        reject(new Error('Belum ada gambar yang dimuat'));
-        return;
-      }
-
-      let kanvasFinal = this._canvas;
-
-      // Jika ada ukuranMaks output, resize
-      if (this._opsi.ukuranMaks) {
-        const { lebar: mL, tinggi: mT } = this._opsi.ukuranMaks;
-        const skala = Math.min(mL / this._canvas.width, mT / this._canvas.height, 1);
-        if (skala < 1) {
-          const tmp    = document.createElement('canvas');
-          tmp.width    = Math.round(this._canvas.width  * skala);
-          tmp.height   = Math.round(this._canvas.height * skala);
-          const tmpCtx = tmp.getContext('2d');
-          tmpCtx.drawImage(this._canvas, 0, 0, tmp.width, tmp.height);
-          kanvasFinal = tmp;
-        }
-      }
-
-      const mime = `image/${this._opsi.formatOutput}`;
       kanvasFinal.toBlob(
         (blob) => {
-          if (!blob) { reject(new Error('Gagal menghasilkan blob')); return; }
+          if (!blob) { reject(new EditorError('Gagal menghasilkan blob')); return; }
           this.emit('selesai', blob);
           resolve(blob);
         },
@@ -1654,6 +2122,25 @@ export class ImageEditor {
    * Hancurkan editor: hapus semua listener dan elemen dari DOM.
    */
   hancurkan() {
+    // @adr Revoke seluruh object URL yang masih tertahan di tracker.
+    // @context object URL (dari toBlob() saat crop) tidak di-GC otomatis oleh browser,
+    //   dan tidak semuanya sempat ter-revoke via _simpanHistory() — entry aktif terakhir
+    //   (this._gambarSrc) sengaja dibiarkan hidup selama editor masih dipakai, lihat guard
+    //   di _revokeObjectUrlEntry(). Itulah komentar "yang masih tertinggal di _history saat
+    //   hancurkan() dipanggil ikut direvoke" di header file — diimplementasikan di sini.
+    // @decision saat instance dihancurkan, tidak ada lagi alasan menahan URL apa pun —
+    //   revoke semuanya tanpa terkecuali, termasuk yang sedang aktif.
+    for (const url of this._objectUrlDibuat) {
+      URL.revokeObjectURL(url);
+    }
+    this._objectUrlDibuat.clear();
+
+    // Object URL watermark dilacak terpisah dari this._objectUrlDibuat (siklus hidup
+    // independen — lihat dokumentasi this._watermark di constructor) sehingga harus
+    // di-revoke eksplisit di sini juga, bukan ikut ke-cover oleh loop di atas.
+    this._revokeObjectUrlWatermark();
+    this._watermark = null;
+
     // Listener di canvas/kontainer akan di-GC bersama elemen
     this._kontainer.innerHTML = '';
     this._gambar = null;
